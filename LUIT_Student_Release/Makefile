@@ -28,7 +28,7 @@ HAL_OBJS = $(HAL_SRCS:.c=.o)
 
 UPROGS = user/init user/sh user/echo user/cat user/ls user/mkdir user/rm \
          user/wc user/grep user/kill user/ln user/ps user/meminfo user/vdemo \
-         user/usertests user/forktest
+         user/usertests user/forktest user/hello
 
 ULIB = user/crt0.o user/ulib.o user/umalloc.o user/usys.o
 
