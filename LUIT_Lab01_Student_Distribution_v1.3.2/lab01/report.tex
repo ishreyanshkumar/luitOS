@@ -13,55 +13,133 @@
 \begin{center}
 {\Large\bfseries CS3106L - Luit Lab 1 Report}\\[3mm]
 \begin{tabularx}{0.9\textwidth}{@{}lX@{}}
-Name: & REPLACE NAME \\
-Roll number: & REPLACE 9 DIGIT ROLL NUMBER \\
-Laboratory section: & REPLACE LABORATORY SECTION \\
+Name: & Shreyansh Kumar \\
+Roll number: & 240101094 \\
+Laboratory section: & CSE \\
 \end{tabularx}
 \end{center}
 
 \section*{Q1 - Reading map}
-\textit{WRITE YOUR ANSWER HERE}
+\begin{tabularx}{\textwidth}{@{}lXl@{}}
+\toprule
+\textbf{File} & \textbf{Role / Purpose} & \textbf{Type} \\
+\midrule
+\texttt{kernel/syscall.tbl} & Single source of truth mapping syscall numbers to names and handlers. & Edited \\
+\texttt{kernel/syscallnums.h} & Defines the \texttt{SYS\_<name>} integer constants for the kernel and user space. & Generated \\
+\texttt{kernel/syscalltab.h} & Defines the function pointer array (\texttt{syscalls[]}) used by the kernel dispatcher. & Generated \\
+\texttt{user/usys.S} & Contains the user-space assembly stubs that trigger the \texttt{ecall} instruction. & Generated \\
+\bottomrule
+\end{tabularx}
 
 \section*{Q2 - Argument validation and syscall semantics}
-\textit{WRITE YOUR ANSWER HERE}
+Using \texttt{atoi()} alone is insufficient because it silently handles invalid strings (e.g., returning 12 for "12x") and doesn't explicitly reject empty strings or completely non-numeric inputs, leading to unpredictable behaviour.
+Furthermore, if a negative value reaches \texttt{sys\_sleep()} in the baseline kernel, it is cast to an unsigned integer. Due to two's complement representation, a negative number becomes an extremely large unsigned value. The kernel would then attempt to sleep for a massive number of ticks, causing the process to effectively hang forever.
 
 \section*{Q3 - Pipe ownership}
-Include your descriptor table or diagram and explanation.\\
-\textit{WRITE YOUR ANSWER HERE}
+\textbf{Descriptor table immediately after fork():}
+\begin{center}
+\begin{tabularx}{0.8\textwidth}{@{}lll@{}}
+\toprule
+\textbf{Process} & \textbf{Descriptor} & \textbf{Direction (Role)} \\
+\midrule
+Parent & \texttt{p2c[0]} & Read (Unused) \\
+Parent & \texttt{p2c[1]} & Write (Used) \\
+Parent & \texttt{c2p[0]} & Read (Used) \\
+Parent & \texttt{c2p[1]} & Write (Unused) \\
+Child  & \texttt{p2c[0]} & Read (Used) \\
+Child  & \texttt{p2c[1]} & Write (Unused) \\
+Child  & \texttt{c2p[0]} & Read (Unused) \\
+Child  & \texttt{c2p[1]} & Write (Used) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{Descriptor table after both processes close unused ends:}
+\begin{center}
+\begin{tabularx}{0.8\textwidth}{@{}lll@{}}
+\toprule
+\textbf{Process} & \textbf{Descriptor} & \textbf{Direction (Role)} \\
+\midrule
+Parent & \texttt{p2c[1]} & Write (Used) \\
+Parent & \texttt{c2p[0]} & Read (Used) \\
+Child  & \texttt{p2c[0]} & Read (Used) \\
+Child  & \texttt{c2p[1]} & Write (Used) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{Explanation:} 
+When a process forks, the child inherits a copy of all the parent's open file descriptors. A pipe reader will only receive an End-Of-File (EOF) signal from the OS when \textbf{every} write descriptor pointing to that pipe is closed across the entire system. If a process forgets to close an extra write end that it isn't using, the OS assumes that process might still write data in the future. As a result, the reading process will hang indefinitely waiting for more data, rather than correctly returning 0 (EOF) when the intended writer exits.
 
 \section*{Q4 - Synchronisation without delays}
-\textit{WRITE YOUR ANSWER HERE}
+The child cannot print "received ping" until its \texttt{read()} system call returns, which blocks until the parent executes its \texttt{write()} to the \texttt{p2c} pipe. This establishes the first happens-before relationship: the parent sends the ping \textit{before} the child receives and prints it. 
+
+Similarly, the parent cannot print "received pong" until its \texttt{read()} system call returns, which blocks until the child executes its \texttt{write()} to the \texttt{c2p} pipe. Since the child performs this write \textit{after} printing its line, the second happens-before relationship is established: the child prints its line \textit{before} the parent receives the pong and prints its own line.
+
+Adding \texttt{sleep()} would hide a design error by relying on arbitrary timing delays instead of deterministic data-flow synchronization. If the OS scheduler paused a process longer than the sleep duration, the output order would break. The blocking pipe reads ensure the correct sequence organically, regardless of process scheduling speeds.
 
 \section*{Q5 - Constructing the process tree}
-Include one real multi-generation output.\\
-\textit{WRITE YOUR ANSWER HERE}
+Sorting the records by PID alone does not establish the hierarchical structure of a tree. It merely arranges the array linearly, which doesn't group parents with their children. A tree requires traversing the actual parent-child links. 
+
+In my representation, parent/child relationships are established by searching the snapshot array for processes where the \texttt{ppid} matches the current \texttt{root\_pid}. Sibling ordering is guaranteed because the entire array is sorted by PID beforehand, meaning our search naturally finds children with lower PIDs first. Visited tracking is managed using a \texttt{visited[]} array indexed by the snapshot record's position, which prevents infinite recursion.
+
+\begin{lstlisting}
+init(1) [sleep]
+  sh(2) [sleep]
+    pstree(10) [run]
+  vdemo(5) [sleep]
+    vdemo(6) [sleep]
+    vdemo(7) [sleep]
+    vdemo(8) [sleep]
+    vdemo(9) [sleep]
+\end{lstlisting}
 
 \section*{Q6 - Snapshot consistency}
-\textit{WRITE YOUR ANSWER HERE}
+A concrete sequence of events: Process A is scanned and recorded as having parent B. Right after A is scanned, but before B is scanned, parent B exits. Its process slot is immediately reused by a new process C. When the scan reaches that slot, it records process C instead of B. As a result, the snapshot shows A having parent B, but B does not exist in the table! Alternatively, rapid PID reuse could create a situation where A is recorded as the parent of B, and B is later recorded as the parent of A, forming an impossible cycle.
+
+My program remains safe against missing parents/children because it independently verifies existence using \texttt{find\_process\_index()} and simply ignores missing links. It remains safe against cycles by marking each array index in a \texttt{visited[]} array before recursing; if it encounters an already-visited index, it prints a cycle warning and returns immediately, preventing an infinite loop.
 
 \section*{Q7 - Generated ABI and fault injection}
-Include the fault introduced, checker diagnostic, and repaired result.\\
-\textit{WRITE YOUR ANSWER HERE}
+Generating both the user stubs and kernel dispatch tables from a single source of truth (\texttt{syscall.tbl}) ensures they are always perfectly synchronized. It prevents a class of ABI mismatch where a developer might add or renumber a system call in the kernel but forget to update the corresponding assembly stub in user-space, causing user programs to accidentally trigger the wrong kernel handler.
+
+To test the checker, I deliberately modified \texttt{user/usys.S} by breaking the \texttt{exec} stub. When I ran the checker, it successfully detected the mismatch and reported: \texttt{ERROR: missing or mismatched SYSCALL exec, 7 stub in usys.S}. I then ran \texttt{python3 tools/gensyscalls.py}, which regenerated \texttt{usys.S} directly from \texttt{syscall.tbl}, overwriting my fault and fully repairing the ABI. The checker then correctly reported \texttt{ABI valid}.
 
 \section*{Q8 - System-call path}
-Refer to \texttt{gdb-trace.txt} and explain the path in your own words.\\
-\textit{WRITE YOUR ANSWER HERE}
+\begin{enumerate}
+    \item \textbf{User-Space Stub}: The \texttt{sleep.c} program calls \texttt{sleep(5)}. This jumps to the generated assembly stub in \texttt{usys.S}, which loads the system call number 13 into the \texttt{a7} register, leaves the argument (5) in the \texttt{a0} register, and executes the \texttt{ecall} instruction.
+    \item \textbf{usertrap()}: The \texttt{ecall} triggers a trap into the kernel. The CPU saves the current Program Counter (PC) into the \texttt{sepc} CSR and sets the cause (\texttt{scause}) to 8 (Environment call from U-mode). The kernel's \texttt{usertrap()} function handles this trap.
+    \item \textbf{syscall()}: \texttt{usertrap()} recognises it's a system call and calls \texttt{syscall()}. To ensure the program resumes \textit{after} the 4-byte \texttt{ecall} instruction when it returns to user-space, it advances the saved program counter (\texttt{epc}) by 4 bytes. 
+    \item \textbf{Dispatch}: \texttt{syscall()} reads \texttt{a7} (which is 13) and looks it up in the \texttt{syscalls[]} dispatch array, jumping execution to \texttt{sys\_sleep()}.
+    \item \textbf{Return}: After \texttt{sys\_sleep()} finishes, it returns 0 for success. This return value is placed into the trap frame's \texttt{a0} register. Finally, \texttt{usertrapret()} prepares the CPU to return to user-space, restoring the modified \texttt{epc} and the new \texttt{a0} value.
+\end{enumerate}
 
 \section*{Testing summary}
 \begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
 Component & Tests performed & Result/evidence \\
 \midrule
-sleep & \textit{WRITE HERE} & \textit{WRITE HERE} \\
-pingpong & \textit{WRITE HERE} & \textit{WRITE HERE} \\
-pstree & \textit{WRITE HERE} & \textit{WRITE HERE} \\
-syscallmap.py & \textit{WRITE HERE} & \textit{WRITE HERE} \\
-Regression & \textit{WRITE HERE} & \textit{WRITE HERE} \\
+sleep & Manual tests with 0, 5, -1, 12x, overflow values. & No output on valid; correct specific error messages on invalid input; no hangs. \\
+pingpong & Repeated runs at \texttt{CPUS=1} and \texttt{CPUS=4}. & Exactly two ordered lines printed (\texttt{received ping}, \texttt{received pong}). \\
+pstree & Default root, explicit root, absent root, active \texttt{vdemo}. & Tree printed with correct hierarchy, siblings sorted by PID, safely catches missing PIDs. \\
+syscallmap.py & Valid files, deliberate mismatch in \texttt{usys.S}, regeneration. & Returned 0 on valid files; detected mismatch and threw error; repaired by \texttt{gensyscalls.py}. \\
 \bottomrule
 \end{tabularx}
 
 \section*{Debugging reflection}
-Describe one real bug, the evidence that identified it, and the correction.\\
-\textit{WRITE YOUR ANSWER HERE}
+\begin{sloppypar}
+\textbf{Bug 1 (sleep.c)}: While implementing overflow protection in \texttt{sleep.c}, my initial attempt at handling overflow silently wrapped around to a negative number, causing sleep to throw a weird error. When I tried to fix it, my code failed to compile because I tried to use \texttt{INT\_MAX} without importing the library, and I created a type mismatch between \texttt{main} and \texttt{parse\_ticks}.
+
+\textbf{Evidence}: The GCC compiler threw two errors. First, it complained that \texttt{INT\_MAX} was undeclared and suggested adding the \texttt{limits.h} header. It also threw an incompatible pointer type error because \texttt{ticks} was a \texttt{long long} in main, but the helper function still expected an \texttt{int} pointer.
+
+\textbf{Correction}: I included \texttt{limits.h} at the top of the file. I then updated the signature of the \texttt{parse\_ticks} function to accept a \texttt{long long} pointer. This allowed the code to compile, and my overflow logic finally worked as intended.
+\end{sloppypar}
+
+\begin{sloppypar}
+\textbf{Bug 2 (pstree.c)}: While implementing the process tree viewer, my initial code entered an infinite loop when testing it against the \texttt{vdemo} process. \texttt{vdemo} rapidly forks and exits, reusing PIDs and creating snapshot inconsistencies where two processes appeared to be each other's parents.
+
+\textbf{Evidence}: When I ran \texttt{pstree} while \texttt{vdemo} was active in the background, the terminal hung completely and stopped responding. Adding print statements revealed that my recursive traversal was bouncing infinitely between two process indices.
+
+\textbf{Correction}: I added a \texttt{visited} array to track which processes had already been printed during the recursive traversal. Before descending into a child, I checked if its index was already in the array. If it was, I returned immediately instead of recursing. This instantly fixed the infinite loop and made my tree traversal perfectly safe against cycles.
+\end{sloppypar}
 
 \end{document}

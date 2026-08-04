@@ -1,9 +1,9 @@
 LUIT LAB 1 SUBMISSION
 
-Name              : REPLACE_WITH_YOUR_NAME
-Roll number       : REPLACE_WITH_YOUR_9_DIGIT_ROLL_NUMBER
-Laboratory section: REPLACE_WITH_YOUR_SECTION
-IITG email        : REPLACE_WITH_YOUR_IITG_EMAIL
+Name              : Shreyansh Kumar
+Roll number       : 240101094
+Laboratory section: CSE
+IITG email        : k.shreyansh@iitg.ac.in
 
 Declaration:
 I confirm that this submission is my own work. I have listed all permitted

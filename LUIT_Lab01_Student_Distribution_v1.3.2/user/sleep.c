@@ -2,23 +2,30 @@
  * Complete only the marked TODO sections. You may add helper functions in
  * this file, but do not modify the kernel or the generated syscall files. */
 #include "ulib.h"
+#include <limits.h>
 
 /* Parse one non-negative decimal integer that fits in a signed int.
  * Return 0 on success and store the result in *ticks; return -1 otherwise. */
 static int
-parse_ticks(const char *text, int *ticks)
+parse_ticks(const char *text, long long *ticks)
 {
     /* TODO-BEGIN S1: validate the complete string and convert safely. */
-    (void)text;
-    (void)ticks;
-    return -1;
+    if(text[0] == '\0') return -1;
+
+    long long result = 0;
+    for(int i=0;text[i]!='\0';i++){
+        if(text[i]<'0' || text[i]>'9') return -1;
+        result = result * 10 + (text[i] - '0');
+    }
+    *ticks = result;
+    return 0;
     /* TODO-END S1 */
 }
 
 int
 main(int argc, char *argv[])
 {
-    int ticks = 0;
+    long long ticks = 0;
 
     (void)parse_ticks;  /* keeps the compilable starter warning-free */
 
@@ -28,14 +35,22 @@ main(int argc, char *argv[])
     }
 
     /* TODO-BEGIN S2: call parse_ticks() and reject invalid input. */
-    (void)argv;
-    fprintf(2, "sleep: TODO S2 is not implemented\n");
-    exit(1);
+    if(parse_ticks(argv[1],&ticks) == -1){
+        fprintf(2, "sleep: system call failed\n");
+        exit(1);
+    }
     /* TODO-END S2 */
 
     /* TODO-BEGIN S3: invoke sleep(ticks), check failure, and exit correctly. */
-    (void)ticks;
-    fprintf(2, "sleep: TODO S3 is not implemented\n");
-    exit(1);
+    if (sleep(ticks) < 0) {
+        fprintf(2, "sleep: ticks must be a non-negative decimal integer\n");
+        exit(1);
+    }
+
+    if (ticks > INT_MAX) {
+            fprintf(2, "sleep: ticks must be a non-negative decimal integer\n");
+            exit(1);
+    }
+    exit(0);
     /* TODO-END S3 */
 }
