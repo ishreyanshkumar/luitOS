@@ -5,6 +5,9 @@
 \usepackage{microtype}
 \usepackage{booktabs,tabularx}
 \usepackage{listings}
+\usepackage{tabularx}
+\usepackage{graphicx}
+\usepackage{amsmath}
 \usepackage[hidelinks]{hyperref}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0.55em}
@@ -20,70 +23,112 @@ Laboratory section: & CSE \\
 \end{center}
 
 \section*{Q1 - Reading map}
-\begin{tabularx}{\textwidth}{@{}lXl@{}}
-\toprule
-\textbf{File} & \textbf{Role / Purpose} & \textbf{Type} \\
-\midrule
-\texttt{kernel/syscall.tbl} & Single source of truth mapping syscall numbers to names and handlers. & Edited \\
-\texttt{kernel/syscallnums.h} & Defines the \texttt{SYS\_<name>} integer constants for the kernel and user space. & Generated \\
-\texttt{kernel/syscalltab.h} & Defines the function pointer array (\texttt{syscalls[]}) used by the kernel dispatcher. & Generated \\
-\texttt{user/usys.S} & Contains the user-space assembly stubs that trigger the \texttt{ecall} instruction. & Generated \\
-\bottomrule
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\textbf{File} & \textbf{Role / Purpose} \\ \hline
+\textbf{kernel/syscall.tbl} & The source file acting as a single source of truth that defines system calls. It maps syscall numbers to their respective names and kernel handler functions. It is manually edited when a new syscall is introduced. \\ \hline
+\textbf{kernel/syscalltab.h} & A generated kernel header file that defines the function pointer array (\texttt{syscalls[]}). It maps the syscall number directly to its actual C handler function (\texttt{sys\_sleep}, etc.) used by the kernel dispatcher. \\ \hline
+\textbf{user/usys.S} & A generated user-space assembly file containing syscall wrapper functions (stubs). These wrappers load the correct syscall number into a register and execute the \texttt{ecall} instruction to trap into the kernel safely. \\ \hline
+\textbf{kernel/syscallnums.h} & A generated header file that defines the \texttt{SYS\_<name>} integer constants (e.g., \texttt{SYS\_sleep}) which serve as unique identifiers for system calls shared across both kernel and user space. \\ \hline
 \end{tabularx}
 
 \section*{Q2 - Argument validation and syscall semantics}
-Using \texttt{atoi()} alone is insufficient because it silently handles invalid strings (e.g., returning 12 for "12x"), fails to detect integer overflow (silently wrapping around), and doesn't explicitly reject empty strings or completely non-numeric inputs. This leads to unpredictable behaviour and potential bugs that are hard to trace.
-Furthermore, if a negative value reaches \texttt{sys\_sleep()} in the baseline kernel, it is cast to an unsigned integer. Due to two's complement representation, a negative number becomes an extremely large unsigned value. The kernel would then attempt to sleep for a massive number of ticks, causing the process to effectively hang forever.
+
+Using \texttt{atoi()} alone is insufficient for robust argument validation because \texttt{atoi()} silently handles invalid formatting and fails to detect integer overflows. For example, it will parse the string \texttt{"12x"} as simply \texttt{12}, discarding the invalid suffix without throwing any error. It also silently wraps around on extremely large numbers, and doesn't explicitly reject empty strings or completely non-numeric inputs. This leads to unpredictable system behaviour, as invalid inputs are masqueraded as perfectly valid integers, creating bugs that are hard to trace.
+
+For the \texttt{sleep} command, the argument must strictly be a valid non-negative integer representing the exact number of ticks. Therefore, explicit validation (using methods like \texttt{strtol} or manual digit-by-digit checking) is required to ensure that the input contains only valid digits and that its numerical value sits safely within the valid integer bounds before making the system call.
+
+Furthermore, in the baseline kernel, if a negative value is passed and reaches \texttt{sys\_sleep()}, it is cast to an unsigned integer. Due to the two's complement binary representation, a negative number like \texttt{-1} mathematically becomes an extremely large unsigned positive value. The kernel would then attempt to sleep until the system tick counter reaches this massive value. This causes the process to effectively hang forever, wasting CPU cycles and permanently occupying one of the limited process slots within the operating system's process table.
 
 \section*{Q3 - Pipe ownership}
-\textbf{Descriptor table immediately after fork():}
+
+When the \texttt{fork()} system call is invoked, the child process inherits a complete copy of the parent's file descriptor table. Thus, immediately after \texttt{fork()}, both the parent and child processes have open descriptors for both ends of the two pipes.
+
 \begin{center}
-\begin{tabularx}{0.8\textwidth}{@{}lll@{}}
-\toprule
+\begin{tabular}{|c|c|c|}
+\hline
 \textbf{Process} & \textbf{Descriptor} & \textbf{Direction (Role)} \\
-\midrule
-Parent & \texttt{p2c[0]} & Read (Unused) \\
-Parent & \texttt{p2c[1]} & Write (Used) \\
-Parent & \texttt{c2p[0]} & Read (Used) \\
-Parent & \texttt{c2p[1]} & Write (Unused) \\
-Child  & \texttt{p2c[0]} & Read (Used) \\
-Child  & \texttt{p2c[1]} & Write (Unused) \\
-Child  & \texttt{c2p[0]} & Read (Unused) \\
-Child  & \texttt{c2p[1]} & Write (Used) \\
-\bottomrule
-\end{tabularx}
+\hline
+Parent & p2c[0] & Read end of parent-to-child pipe (Unused) \\
+\hline
+Parent & p2c[1] & Write end of parent-to-child pipe (Used) \\
+\hline
+Parent & c2p[0] & Read end of child-to-parent pipe (Used) \\
+\hline
+Parent & c2p[1] & Write end of child-to-parent pipe (Unused) \\
+\hline
+Child & p2c[0] & Read end of parent-to-child pipe (Used) \\
+\hline
+Child & p2c[1] & Write end of parent-to-child pipe (Unused) \\
+\hline
+Child & c2p[0] & Read end of child-to-parent pipe (Unused) \\
+\hline
+Child & c2p[1] & Write end of child-to-parent pipe (Used) \\
+\hline
+\end{tabular}
 \end{center}
 
-\textbf{Descriptor table after both processes close unused ends:}
+After both processes execute the code to close their unused pipe ends, the descriptor ownership optimally becomes:
+
 \begin{center}
-\begin{tabularx}{0.8\textwidth}{@{}lll@{}}
-\toprule
-\textbf{Process} & \textbf{Descriptor} & \textbf{Direction (Role)} \\
-\midrule
-Parent & \texttt{p2c[1]} & Write (Used) \\
-Parent & \texttt{c2p[0]} & Read (Used) \\
-Child  & \texttt{p2c[0]} & Read (Used) \\
-Child  & \texttt{c2p[1]} & Write (Used) \\
-\bottomrule
-\end{tabularx}
+\begin{tabular}{|c|c|c|}
+\hline
+\textbf{Process} & \textbf{Descriptor} & \textbf{Operation} \\
+\hline
+Parent & p2c[1] & Write token to child \\
+\hline
+Parent & c2p[0] & Read reply from child \\
+\hline
+Child & p2c[0] & Read token from parent \\
+\hline
+Child & c2p[1] & Write reply to parent \\
+\hline
+\end{tabular}
 \end{center}
 
-\textbf{Explanation:} 
-When a process forks, the child inherits a copy of all the parent's open file descriptors. A pipe reader will only receive an End-Of-File (EOF) signal from the OS when \textbf{every} write descriptor pointing to that pipe is closed across the entire system. If a process forgets to close an extra write end that it isn't using, the OS assumes that process might still write data in the future. As a result, the reading process will hang indefinitely waiting for more data, rather than correctly returning 0 (EOF) when the intended writer exits.
+The underlying file descriptor structure tracks a system-wide reference count of open ends. A pipe reaches End-Of-File (EOF) on the read side (causing \texttt{read()} to return 0) only when \textbf{all} file descriptors referring to the write end of that pipe are completely closed across the entire system. If an extra write end remains open (for example, if the child forgets to close \texttt{p2c[1]}), the OS assumes that a writer might still produce data in the future. As a result, the reading process will continue to hang indefinitely in a blocked state, waiting for more data, rather than correctly terminating when the intended writer exits.
 
 \section*{Q4 - Synchronisation without delays}
-The child cannot print "received ping" until its \texttt{read()} system call returns, which blocks until the parent executes its \texttt{write()} to the \texttt{p2c} pipe. This establishes the first happens-before relationship: the parent sends the ping \textit{before} the child receives and prints it. 
 
-Similarly, the parent cannot print "received pong" until its \texttt{read()} system call returns, which blocks until the child executes its \texttt{write()} to the \texttt{c2p} pipe. Since the child performs this write \textit{after} printing its line, the second happens-before relationship is established: the child prints its line \textit{before} the parent receives the pong and prints its own line.
+The deterministic ordering of the console output is strictly guaranteed by the blocking nature of the \texttt{read()} system calls interacting over the two pipes. The parent process writes a byte to the parent-to-child pipe. The child process performs a \texttt{read()} on this pipe. Since \texttt{read()} is a blocking operation, the child is placed into a sleeping state until the parent successfully sends the data. 
 
-Adding \texttt{sleep()} would hide a design error by relying on arbitrary timing delays instead of deterministic data-flow synchronization. If the OS scheduler paused a process longer than the sleep duration, the output order would break. The blocking pipe reads ensure the correct sequence organically, regardless of process scheduling speeds.
+After receiving the byte, the child successfully prints the ``received ping'' message to the console, and then proceeds to write a response byte back into the child-to-parent pipe. The parent process, meanwhile, is performing a blocking \texttt{read()} on this second pipe, meaning it is effectively paused and cannot print the ``received pong'' message until the child has fully completed its printing and sent the response byte.
+
+Therefore, the strict happens-before relationships established are:
+
+\[
+\text{Parent write ping} \rightarrow \text{Child read ping}
+\]
+
+\[
+\text{Child print ping} \rightarrow \text{Child write pong}
+\]
+
+\[
+\text{Child write pong} \rightarrow \text{Parent read pong}
+\]
+
+\[
+\text{Parent read pong} \rightarrow \text{Parent print pong}
+\]
+
+These absolute dependencies mathematically force the child's output line to always appear before the parent's output line, without relying on any arbitrary or artificial delays.
+
+Adding a \texttt{sleep()} call would simply inject an arbitrary timing delay and hide a fundamental design error. It would not establish a correct data-flow synchronization relationship. While it might appear to fix the ordering visually during a single test run, it relies on timing assumptions that will easily break under heavy system loads or different scheduler conditions. Using \texttt{sleep()} merely sweeps the problem under the rug, whereas pipes provide true structural synchronization because they forcibly block processes until the necessary communication event physically occurs.
 
 \section*{Q5 - Constructing the process tree}
-Sorting the records by PID alone does not establish the hierarchical structure of a tree. It merely arranges the array linearly, which doesn't group parents with their children. A tree requires traversing the actual parent-child links. 
 
-In my representation, parent/child relationships are established by searching the snapshot array for processes where the \texttt{ppid} matches the current \texttt{root\_pid}. Sibling ordering is guaranteed because the entire array is sorted by PID beforehand, meaning our search naturally finds children with lower PIDs first. Visited tracking is managed using a \texttt{visited[]} array indexed by the snapshot record's position, which prevents infinite recursion.
+Merely sorting the snapshot records returned by \texttt{procstat()} by their PID values is insufficient for constructing a hierarchical process tree. A PID only sequentially identifies a process; while newer processes tend to have larger PIDs, this linearity does not group parents with their children or represent ancestry. The actual hierarchy must be mathematically reconstructed by traversing the explicit \texttt{ppid} (parent PID) fields from each process record.
 
-\begin{lstlisting}
+In my representation, parent/child relationships are established by performing a Depth-First Search (DFS) directly on the snapshot array. Starting from a specified \texttt{root\_pid}, we search the array for all processes where their \texttt{ppid} precisely matches the \texttt{root\_pid}. The tree is generated by recursively finding and printing these discovered child processes.
+
+The initial array is still sorted by PID beforehand to ensure deterministic and neat ordering between siblings. This guarantees that processes sharing the exact same parent are printed sequentially in increasing PID order, even while the overarching tree structure is still strictly dictated by the parent-child PID links.
+
+Crucially, a separate \texttt{visited[]} array is maintained during this recursive traversal. A process record's specific index is marked as visited before recursively processing its own children. This entirely prevents duplicate printing and cleanly aborts infinite recursion if a changing snapshot happens to create a malformed topological cycle.
+
+The following is an actual snapshot output obtained from running my \texttt{pstree} implementation while multiple \texttt{vdemo} processes were actively forking in the background:
+
+\begin{verbatim}
 init(1) [sleep]
   sh(2) [sleep]
     pstree(10) [run]
@@ -92,29 +137,66 @@ init(1) [sleep]
     vdemo(7) [sleep]
     vdemo(8) [sleep]
     vdemo(9) [sleep]
-\end{lstlisting}
+\end{verbatim}
+
+This perfectly demonstrates the multi-generational tree construction: \texttt{sh} and \texttt{vdemo(5)} are direct children of \texttt{init}, and the cascade of subsequent \texttt{vdemo} processes correctly branch off as descendants.
 
 \section*{Q6 - Snapshot consistency}
-A concrete sequence of events: Process A is scanned and recorded as having parent B. Right after A is scanned, but before B is scanned, parent B exits. Its process slot is immediately reused by a new process C. When the scan reaches that slot, it records process C instead of B. As a result, the snapshot shows A having parent B, but B does not exist in the table! Alternatively, rapid PID reuse could create a situation where A is recorded as the parent of B, and B is later recorded as the parent of A, forming an impossible cycle.
 
-My program remains safe against missing parents/children because it independently verifies existence using \texttt{find\_process\_index()} and simply ignores missing links. It remains safe against cycles by marking each array index in a \texttt{visited[]} array before recursing; if it encounters an already-visited index, it prints a cycle warning and returns immediately, preventing an infinite loop.
+The \texttt{procstat()} system call reads process records safely, but the underlying live process table is continuously changing while the iterative scan is taking place. Because the kernel doesn't freeze the entire system during this scan, the returned snapshot may not perfectly represent the exact state of the process table at one single atomic instant, leading to a classic Time-Of-Check to Time-Of-Use (TOCTOU) race condition.
+
+A concrete sequence of events demonstrating this:
+\begin{enumerate}
+    \item \texttt{procstat()} starts scanning and correctly records Process A as having parent B.
+    \item Right after A is successfully scanned, but just before the scan reaches B's slot, parent B exits.
+    \item B's process slot is immediately reused by a brand new process C.
+    \item The scan reaches that slot and unknowingly records C instead of B.
+\end{enumerate}
+
+As a result, the returned user-space snapshot shows A having parent B, but process B literally does not exist in the snapshot table. Alternatively, rapid PID reuse during the scan could result in A being recorded as the parent of B, while B is later recorded as the parent of A, forming a physically impossible cycle in the graph.
+
+My program remains completely safe against these inconsistencies because it never blindly trusts the links. It independently verifies the existence of parents and children using a helper function \texttt{find\_process\_index()} and simply ignores missing links, treating those orphaned processes as isolated nodes. To safeguard against cycles, it explicitly marks each array index in a boolean \texttt{visited[]} array before recursing. If it encounters an already-visited index during the descent, it immediately detects the cycle, prints a cycle warning, and returns, completely preventing a fatal infinite loop.
 
 \section*{Q7 - Generated ABI and fault injection}
-Generating both the user stubs and kernel dispatch tables from a single source of truth (\texttt{syscall.tbl}) ensures they are always perfectly synchronized. It prevents a class of ABI mismatch where a developer might add or renumber a system call in the kernel but forget to update the corresponding assembly stub in user-space, causing user programs to accidentally trigger the wrong kernel handler.
 
-To test the checker, I deliberately modified \texttt{user/usys.S} by breaking the \texttt{exec} stub. When I ran the checker, it successfully detected the mismatch and reported: \texttt{ERROR: missing or mismatched SYSCALL exec, 7 stub in usys.S}. I then ran \texttt{python3 tools/gensyscalls.py}, which regenerated \texttt{usys.S} directly from \texttt{syscall.tbl}, overwriting my fault and fully repairing the ABI. The checker then correctly reported \texttt{ABI valid}.
+The file \texttt{kernel/syscall.tbl} acts as the single source of truth (like an IDL) defining the system call interface. The dynamically generated files, such as the user-space assembly stubs (\texttt{user/usys.S}) and kernel headers (\texttt{kernel/syscalltab.h} and \texttt{kernel/syscallnums.h}), are automatically synthesized from this singular table. Programmatically generating all Application Binary Interface (ABI) files from one source prevents catastrophic mismatches where a developer might add or renumber a system call in the kernel but forget to update the corresponding assembly stub in user-space, causing the user program to accidentally trigger the wrong kernel handler.
+
+For fault testing, I deliberately broke the generated ABI by modifying the user-space assembly file \texttt{user/usys.S}. Specifically, I changed the syscall number of the \texttt{exec} stub to an incorrect value. 
+
+When I subsequently ran the checker script using:
+\begin{verbatim}
+python3 tools/syscallmap.py
+\end{verbatim}
+
+The script successfully detected the deliberate inconsistency and threw a hard error:
+\begin{verbatim}
+ERROR: missing or mismatched SYSCALL exec, 7 stub in usys.S
+\end{verbatim}
+This proved the ABI was invalid and the checker was working correctly.
+
+The error was cleanly repaired by regenerating the assembly files using the script:
+\begin{verbatim}
+python3 tools/gensyscalls.py
+\end{verbatim}
+
+This command read from \texttt{syscall.tbl} and completely overwrote my modified \texttt{usys.S}, restoring the true \texttt{exec} syscall number. Running the checker again then correctly reported \texttt{ABI valid}, confirming that single-source generation gracefully repairs manual desynchronization.
 
 \section*{Q8 - System-call path}
-\textbf{Disassembled \texttt{sleep} stub:}
-\begin{lstlisting}
+
+The execution of the \texttt{sleep} system call originates in user space when the C program invokes \texttt{sleep(5)}. This directly jumps to the generated user stub inside \texttt{usys.S}, which prepares the CPU for the context switch into the kernel by using the RISC-V \texttt{ecall} instruction.
+
+My disassembled user stub for \texttt{sleep} confirms this sequence:
+\begin{verbatim}
 00000000000017f2 <sleep>:
     17f2:       48b5                    li      a7,13
     17f4:       00000073                ecall
     17f8:       8082                    ret
-\end{lstlisting}
+\end{verbatim}
 
-\textbf{Compact GDB Transcript:}
-\begin{lstlisting}
+The value loaded into register \texttt{a7} is \texttt{13}, which correctly corresponds to the \texttt{sleep} syscall number defined in our ABI table. The argument (\texttt{5}) is held in the \texttt{a0} register as per RISC-V calling conventions.
+
+During the hardware transition into the kernel, the CPU traps to \texttt{usertrap()}. My compact GDB transcript captured the exact state at this boundary:
+\begin{verbatim}
 (gdb) p $p->pid
 $1 = 3
 (gdb) p $p->name
@@ -127,11 +209,12 @@ $4 = 5
 $5 = 0x8
 (gdb) p/x $sepc
 $6 = 0x17f4
-(gdb) break syscall if cpus[$tp].proc != 0 && cpus[$tp].proc->pid == $labpid
-Breakpoint 2 at 0x8020351e: file kernel/syscall.c, line 120.
-(gdb) continue
-Continuing.
-Breakpoint 2, syscall () at kernel/syscall.c:120
+\end{verbatim}
+
+The registers firmly show that the syscall number (\texttt{13}) and argument (\texttt{5}) safely crossed the boundary. \texttt{scause} is \texttt{0x8}, which specifically identifies an Environment call from U-mode (a deliberate syscall). The saved program counter, \texttt{sepc}, points perfectly to \texttt{0x17f4}, the exact memory address of the \texttt{ecall} instruction that caused the trap.
+
+Inside the kernel, \texttt{usertrap()} identifies the syscall and forwards execution to the \texttt{syscall()} dispatcher. The trapframe values observed were:
+\begin{verbatim}
 (gdb) p $p->tf->a7
 $7 = 13
 (gdb) p $p->tf->a0
@@ -140,62 +223,40 @@ $8 = 5
 $9 = 0x17f8
 (gdb) p/x ($p->tf->epc - $ecallpc)
 $10 = 0x4
-(gdb) break sys_sleep if cpus[$tp].proc != 0 && cpus[$tp].proc->pid == $labpid
-Breakpoint 3 at 0x80203322: file kernel/syscall.c, line 75.
-(gdb) continue
-Continuing.
-Breakpoint 3, sys_sleep () at kernel/sysproc.c:54
-(gdb) bt
+\end{verbatim}
+
+The four-byte difference (\texttt{0x4}) explicitly demonstrates the kernel advancing the saved program counter (\texttt{epc}) by the size of the \texttt{ecall} instruction itself. This critical step ensures that when the CPU eventually returns to user mode, execution cleanly resumes at the \texttt{ret} instruction (\texttt{0x17f8}) rather than infinitely re-triggering the \texttt{ecall}.
+
+The dispatcher uses \texttt{a7} to map to \texttt{sys\_sleep()}. The GDB backtrace confirms the deep kernel path:
+\begin{verbatim}
 #0  sys_sleep () at kernel/sysproc.c:54
 #1  0x000000008020356c in syscall () at kernel/syscall.c:124
 #2  0x000000008020275a in usertrap () at kernel/trap.c:134
-(gdb) break usertrapret if cpus[$tp].proc != 0 && cpus[$tp].proc->pid == $labpid
-Breakpoint 4 at 0x80202868: file kernel/trap.c, line 163.
-(gdb) continue
-Continuing.
-Breakpoint 4, usertrapret () at kernel/trap.c:163
-(gdb) p $p->tf->a0
-$11 = 0
-(gdb) p/x $p->tf->epc
-$12 = 0x17f8
-\end{lstlisting}
+\end{verbatim}
 
-\textbf{Path Explanation:}
-\begin{enumerate}
-    \item \textbf{User-Space Stub}: The \texttt{sleep.c} program calls \texttt{sleep(5)}. This jumps to the generated assembly stub in \texttt{usys.S}, which loads the system call number 13 into the \texttt{a7} register, leaves the argument (5) in the \texttt{a0} register, and executes the \texttt{ecall} instruction.
-    \item \textbf{usertrap()}: The \texttt{ecall} triggers a trap into the kernel. The CPU saves the current Program Counter (PC) into the \texttt{sepc} CSR and sets the cause (\texttt{scause}) to 8 (Environment call from U-mode). The kernel's \texttt{usertrap()} function handles this trap.
-    \item \textbf{syscall()}: \texttt{usertrap()} recognises it's a system call and calls \texttt{syscall()}. To ensure the program resumes \textit{after} the 4-byte \texttt{ecall} instruction when it returns to user-space, it advances the saved program counter (\texttt{epc}) by 4 bytes. 
-    \item \textbf{Dispatch}: \texttt{syscall()} reads \texttt{a7} (which is 13) and looks it up in the \texttt{syscalls[]} dispatch array, jumping execution to \texttt{sys\_sleep()}.
-    \item \textbf{Return}: After \texttt{sys\_sleep()} finishes, it returns 0 for success. This return value is placed into the trap frame's \texttt{a0} register. Finally, \texttt{usertrapret()} prepares the CPU to return to user-space, restoring the modified \texttt{epc} and the new \texttt{a0} value.
-\end{enumerate}
+Once the sleep completes, the handler returns success, setting \texttt{a0 = 0}. Finally, \texttt{usertrapret()} restores the context and switches the CPU back to user mode.
+
+The complete holistic execution path is:
+\[
+\texttt{sleep(5)} \rightarrow \texttt{usys.S} \rightarrow \texttt{ecall} \rightarrow \texttt{usertrap()} \rightarrow \texttt{syscall()} \rightarrow \texttt{sys\_sleep()} \rightarrow \texttt{usertrapret()}
+\]
 
 \section*{Testing summary}
 \begin{tabularx}{\textwidth}{@{}lXX@{}}
 \toprule
 Component & Tests performed & Result/evidence \\
 \midrule
-sleep & Manual tests with 0, 5, -1, 12x, overflow values. & No output on valid; correct specific error messages on invalid input; no hangs. \\
-pingpong & Repeated runs at \texttt{CPUS=1} and \texttt{CPUS=4}. & Exactly two ordered lines printed (\texttt{received ping}, \texttt{received pong}). \\
-pstree & Default root, explicit root, absent root, active \texttt{vdemo}. & Tree printed with correct hierarchy, siblings sorted by PID, safely catches missing PIDs. \\
-syscallmap.py & Valid files, deliberate mismatch in \texttt{usys.S}, regeneration. & Returned 0 on valid files; detected mismatch and threw error; repaired by \texttt{gensyscalls.py}. \\
+sleep & Tested valid inputs (\texttt{sleep 0}, \texttt{sleep 5}), and heavily tested invalid bounds (\texttt{sleep -1}, mixed text like \texttt{12x}, empty arguments, and extreme overflow values). & All valid and invalid edge cases produced the correct targeted error messages. No system hangs or silent wraparounds were observed. The syscall path was traced perfectly via GDB. \\
+pingpong & Executed the bi-directional pipe communication program repeatedly under both single-core (\texttt{CPUS=1}) and multi-core (\texttt{CPUS=4}) simulated environments. & The program consistently produced exactly two ordered messages (\texttt{received ping} then \texttt{received pong}) with perfect deterministic synchronization across all CPU configurations. \\
+pstree & Tested default root (\texttt{pstree}), explicit root (\texttt{pstree 1}), an absent root, and dynamically tested it while the background \texttt{vdemo} process was rapidly forking and exiting. & It printed the full process hierarchy correctly, with proper parent-child indentation. Siblings were strictly sorted by PID, and the cycle-detection logic safely prevented infinite loops when catching moving PIDs. \\
+syscallmap.py & Verified the generated syscall ABI for consistency. Performed deliberate fault injection testing by modifying the \texttt{exec} stub in \texttt{usys.S}. & The script correctly detected the exact ABI mismatch on \texttt{exec}. When subsequently repaired via \texttt{gensyscalls.py}, it cleanly reported full ABI validity. \\
 \bottomrule
 \end{tabularx}
 
 \section*{Debugging reflection}
-\begin{sloppypar}
-\textbf{Bug 1 (sleep.c)}: While implementing overflow protection in \texttt{sleep.c}, my initial attempt at handling overflow silently wrapped around to a negative number, causing sleep to throw a weird error. When I tried to fix it, my code failed to compile because I created a type mismatch between \texttt{main} and \texttt{parse\_ticks}.
 
-\textbf{Evidence}: The GCC compiler threw an incompatible pointer type error because \texttt{ticks} was a \texttt{long long} in main, but the helper function still expected an \texttt{int} pointer.
+\textbf{Bug 1 (sleep.c) - Integer Overflow Handling:} While aggressively implementing overflow protection in \texttt{sleep.c}, my initial attempt at handling overflow silently wrapped around to a negative number, causing the sleep program to throw an obscure error. When I attempted to redesign the parser, the GCC compiler began throwing an \texttt{incompatible pointer type} error. Investigation revealed this was because my \texttt{ticks} variable was declared as a \texttt{long long} in \texttt{main}, but my helper parsing function, \texttt{parse\_ticks}, was still strictly expecting a standard \texttt{int} pointer. I explicitly updated the signature of the \texttt{parse\_ticks} function to accept a \texttt{long long} pointer and applied rigorous boundary checks. This resolved the compilation failure and ensured that my mathematical overflow logic finally worked as intended, successfully catching and rejecting excessively large inputs without wrapping around.
 
-\textbf{Correction}: I updated the signature of the \texttt{parse\_ticks} function to accept a \texttt{long long} pointer. This allowed the code to compile, and my overflow logic finally worked as intended.
-\end{sloppypar}
-
-\begin{sloppypar}
-\textbf{Bug 2 (pstree.c)}: While implementing the process tree viewer, my initial code entered an infinite loop when testing it against the \texttt{vdemo} process. \texttt{vdemo} rapidly forks and exits, reusing PIDs and creating snapshot inconsistencies where two processes appeared to be each other's parents.
-
-\textbf{Evidence}: When I ran \texttt{pstree} while \texttt{vdemo} was active in the background, the terminal hung completely and stopped responding. Adding print statements revealed that my recursive traversal was bouncing infinitely between two process indices.
-
-\textbf{Correction}: I added a \texttt{visited} array to track which processes had already been printed during the recursive traversal. Before descending into a child, I checked if its index was already in the array. If it was, I returned immediately instead of recursing. This instantly fixed the infinite loop and made my tree traversal perfectly safe against cycles.
-\end{sloppypar}
+\textbf{Bug 2 (pstree.c) - Infinite Process Cycles:} During the initial implementation of the process tree viewer, the code seemed to work fine on static processes. However, it entered a catastrophic infinite loop when tested against the chaotic \texttt{vdemo} process. \texttt{vdemo} rapidly forks and exits, immediately reusing PIDs and creating nasty snapshot inconsistencies where two rapidly-cycling processes technically appeared to be each other's parents in the momentarily captured array. When I ran \texttt{pstree}, the terminal hung completely and became unresponsive. By injecting \texttt{printf} trace statements, I discovered that my recursive DFS traversal was bouncing infinitely back and forth between two distinct process indices forming an impossible cycle. To fix this, I introduced a boolean \texttt{visited} array to rigorously track which absolute array indices had already been printed during the descent. Before recursively descending into a supposed child node, my code now checks if that specific index is already flagged in the array. If it is, it aggressively returns immediately instead of recursing further. This structural patch instantly eliminated the infinite loop and rendered the tree traversal completely immune to cyclic snapshot races.
 
 \end{document}
