@@ -2,7 +2,6 @@
  * Complete only the marked TODO sections. You may add helper functions in
  * this file, but do not modify the kernel or the generated syscall files. */
 #include "ulib.h"
-#include <limits.h>
 
 /* Parse one non-negative decimal integer that fits in a signed int.
  * Return 0 on success and store the result in *ticks; return -1 otherwise. */
@@ -47,7 +46,7 @@ main(int argc, char *argv[])
         exit(1);
     }
 
-    if (ticks > INT_MAX) {
+    if (ticks > 2147483647) {
             fprintf(2, "sleep: ticks must be a non-negative decimal integer\n");
             exit(1);
     }

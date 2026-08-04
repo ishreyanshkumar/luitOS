@@ -11,10 +11,10 @@ If no AI/LLM assistant was used, delete the template and write exactly:
 ## Entry 1
 
 - Tool/model: Gemini / Agentic AI
-- Question asked: Asked for debugging hypotheses regarding a compilation error in `sleep.c` where `INT_MAX` was undeclared and there was an incompatible pointer type mismatch between my functions.
-- Advice used: The assistant hypothesized that I might be missing the `<limits.h>` header for `INT_MAX` and advised me to double-check that the argument types in my function signatures perfectly matched.
+- Question asked: Asked for debugging hypotheses regarding a compilation error in `sleep.c` where there was an incompatible pointer type mismatch between my functions.
+- Advice used: The assistant advised me to double-check that the argument types in my function signatures perfectly matched.
 - Files/sections affected: `user/sleep.c` (overflow checking logic)
-- How I independently verified it: I read the C standard library documentation for `INT_MAX`, verified that my variable types were indeed mismatched, and confirmed that applying the fix allowed the code to compile and pass the tests.
+- How I independently verified it: I verified that my variable types were indeed mismatched, and confirmed that applying the fix allowed the code to compile and pass the tests.
 
 ## Entry 2
 

@@ -127,11 +127,11 @@ syscallmap.py & Valid files, deliberate mismatch in \texttt{usys.S}, regeneratio
 
 \section*{Debugging reflection}
 \begin{sloppypar}
-\textbf{Bug 1 (sleep.c)}: While implementing overflow protection in \texttt{sleep.c}, my initial attempt at handling overflow silently wrapped around to a negative number, causing sleep to throw a weird error. When I tried to fix it, my code failed to compile because I tried to use \texttt{INT\_MAX} without importing the library, and I created a type mismatch between \texttt{main} and \texttt{parse\_ticks}.
+\textbf{Bug 1 (sleep.c)}: While implementing overflow protection in \texttt{sleep.c}, my initial attempt at handling overflow silently wrapped around to a negative number, causing sleep to throw a weird error. When I tried to fix it, my code failed to compile because I created a type mismatch between \texttt{main} and \texttt{parse\_ticks}.
 
-\textbf{Evidence}: The GCC compiler threw two errors. First, it complained that \texttt{INT\_MAX} was undeclared and suggested adding the \texttt{limits.h} header. It also threw an incompatible pointer type error because \texttt{ticks} was a \texttt{long long} in main, but the helper function still expected an \texttt{int} pointer.
+\textbf{Evidence}: The GCC compiler threw an incompatible pointer type error because \texttt{ticks} was a \texttt{long long} in main, but the helper function still expected an \texttt{int} pointer.
 
-\textbf{Correction}: I included \texttt{limits.h} at the top of the file. I then updated the signature of the \texttt{parse\_ticks} function to accept a \texttt{long long} pointer. This allowed the code to compile, and my overflow logic finally worked as intended.
+\textbf{Correction}: I updated the signature of the \texttt{parse\_ticks} function to accept a \texttt{long long} pointer. This allowed the code to compile, and my overflow logic finally worked as intended.
 \end{sloppypar}
 
 \begin{sloppypar}
