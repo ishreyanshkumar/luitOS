@@ -1,0 +1,37 @@
+LUIT LAB 1 - GDB TRACE
+Name: REPLACE_WITH_YOUR_NAME
+Roll number: REPLACE_WITH_YOUR_9_DIGIT_ROLL_NUMBER
+
+1. Disassembled sleep syscall stub
+---------------------------------
+REPLACE_WITH_THE_RELEVANT_OBJDUMP_LINES
+
+2. usertrap() entry evidence
+----------------------------
+Process PID and name: REPLACE_WITH_VALUE
+Register a7: REPLACE_WITH_VALUE
+Register a0: REPLACE_WITH_VALUE
+scause: REPLACE_WITH_VALUE
+sepc: REPLACE_WITH_VALUE
+
+Compact GDB transcript:
+REPLACE_WITH_TRANSCRIPT
+
+3. syscall() evidence
+---------------------
+Saved trapframe epc: REPLACE_WITH_VALUE
+Difference between saved epc and original ecall PC: REPLACE_WITH_VALUE
+
+4. sys_sleep() backtrace
+------------------------
+REPLACE_WITH_BACKTRACE
+
+5. usertrapret() evidence
+-------------------------
+Return value in trapframe a0: REPLACE_WITH_VALUE
+Saved epc: REPLACE_WITH_VALUE
+
+6. Explanation
+--------------
+REPLACE_WITH_YOUR_EXPLANATION_OF_THE_PATH_FROM_SLEEP_C_TO_THE_GENERATED_STUB,
+ECALL, USERTRAP, SYSCALL, SYS_SLEEP, AND USERTRAPRET.

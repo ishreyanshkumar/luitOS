@@ -1,0 +1,29 @@
+LUIT Lab 1 Student Distribution
+Release: lab01-v1.3.2
+
+Editable implementation files:
+  user/sleep.c
+  user/pingpong.c
+  user/pstree.c
+  tools/syscallmap.py
+
+Student evidence files:
+  lab01/report.tex -> lab01/report.pdf
+  lab01/gdb-trace.txt
+  lab01/README.txt
+  lab01/LLM_LOG.md
+
+The submission tool creates:
+  ROLLNUMBER_Lab01.zip
+
+Do not modify kernel, build, generated ABI, public-test, integrity-check, or
+packaging files.
+
+Platform compatibility note:
+  make lab01-check ignores Windows Mark-of-the-Web files named
+  *:Zone.Identifier and other standard host-OS metadata.
+  make lab01-clean-metadata removes them safely.
+
+Patch 1.3.2:
+- accepts firmware-selected boot harts instead of assuming hart 0;
+- makes the public persistence test wait for a completed write and stop QEMU cleanly.
