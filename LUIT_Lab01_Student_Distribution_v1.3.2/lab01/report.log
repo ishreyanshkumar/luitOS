@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.28 (TeX Live 2025/Debian) (preloaded format=pdflatex 2026.6.4)  4 AUG 2026 11:48
+This is pdfTeX, Version 3.141592653-2.6-1.40.28 (TeX Live 2025/Debian) (preloaded format=pdflatex 2026.6.4)  4 AUG 2026 12:12
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -429,16 +429,19 @@ Underfull \hbox (badness 10000) in alignment at lines 68--68
 
 {/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}{/usr/share/texmf/fonts/enc/
 dvips/lm/lm-ec.enc}] [2]
-Underfull \hbox (badness 5741) in paragraph at lines 126--126
+LaTeX Font Info:    Font shape `T1/lmtt/bx/n' in size <10.95> not available
+(Font)              Font shape `T1/lmtt/b/n' tried instead on input line 108.
+ [3]
+Underfull \hbox (badness 5741) in paragraph at lines 182--182
 []|\T1/lmr/m/n/10.95 (+20) Exactly two or-dered lines printed
  []
 
 
-Underfull \hbox (badness 3312) in paragraph at lines 126--126
+Underfull \hbox (badness 3312) in paragraph at lines 182--182
 []|\T1/lmr/m/n/10.95 (+20) Valid files, de-lib-er-ate mis-match in
  []
 
-[3] [4] (./report.aux)
+[4] [5] (./report.aux)
  ***********
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-01-19>
@@ -447,21 +450,21 @@ Package rerunfilecheck Info: File `report.out' has not changed.
 (rerunfilecheck)             Checksum: D41D8CD98F00B204E9800998ECF8427E;0.
  ) 
 Here is how much of TeX's memory you used:
- 12253 strings out of 469438
- 190003 string characters out of 5468411
- 671400 words of memory out of 5000000
- 40694 multiletter control sequences out of 15000+600000
- 660573 words of font info for 103 fonts, out of 8000000 for 9000
+ 12313 strings out of 469438
+ 190877 string characters out of 5468411
+ 843400 words of memory out of 5000000
+ 40699 multiletter control sequences out of 15000+600000
+ 664047 words of font info for 107 fonts, out of 8000000 for 9000
  59 hyphenation exceptions out of 8191
- 75i,8n,79p,1003b,1067s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,8n,79p,1003b,1960s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/share/texmf/fonts/type1/public/lm/lmbx10.pfb></usr/share/texmf/fonts/ty
 pe1/public/lm/lmbx12.pfb></usr/share/texmf/fonts/type1/public/lm/lmr10.pfb></us
 r/share/texmf/fonts/type1/public/lm/lmri10.pfb></usr/share/texmf/fonts/type1/pu
-blic/lm/lmtt10.pfb>
-Output written on report.pdf (4 pages, 146032 bytes).
+blic/lm/lmtk10.pfb></usr/share/texmf/fonts/type1/public/lm/lmtt10.pfb>
+Output written on report.pdf (5 pages, 174249 bytes).
 PDF statistics:
- 80 PDF objects out of 1000 (max. 8388607)
- 63 compressed objects within 1 object stream
- 29 named destinations out of 1000 (max. 500000)
- 17409 words of extra memory for PDF output out of 20736 (max. 10000000)
+ 151 PDF objects out of 1000 (max. 8388607)
+ 130 compressed objects within 2 object streams
+ 79 named destinations out of 1000 (max. 500000)
+ 19969 words of extra memory for PDF output out of 20736 (max. 10000000)
 

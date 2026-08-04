@@ -32,7 +32,7 @@ Laboratory section: & CSE \\
 \end{tabularx}
 
 \section*{Q2 - Argument validation and syscall semantics}
-Using \texttt{atoi()} alone is insufficient because it silently handles invalid strings (e.g., returning 12 for "12x") and doesn't explicitly reject empty strings or completely non-numeric inputs, leading to unpredictable behaviour.
+Using \texttt{atoi()} alone is insufficient because it silently handles invalid strings (e.g., returning 12 for "12x"), fails to detect integer overflow (silently wrapping around), and doesn't explicitly reject empty strings or completely non-numeric inputs. This leads to unpredictable behaviour and potential bugs that are hard to trace.
 Furthermore, if a negative value reaches \texttt{sys\_sleep()} in the baseline kernel, it is cast to an unsigned integer. Due to two's complement representation, a negative number becomes an extremely large unsigned value. The kernel would then attempt to sleep for a massive number of ticks, causing the process to effectively hang forever.
 
 \section*{Q3 - Pipe ownership}
@@ -105,6 +105,62 @@ Generating both the user stubs and kernel dispatch tables from a single source o
 To test the checker, I deliberately modified \texttt{user/usys.S} by breaking the \texttt{exec} stub. When I ran the checker, it successfully detected the mismatch and reported: \texttt{ERROR: missing or mismatched SYSCALL exec, 7 stub in usys.S}. I then ran \texttt{python3 tools/gensyscalls.py}, which regenerated \texttt{usys.S} directly from \texttt{syscall.tbl}, overwriting my fault and fully repairing the ABI. The checker then correctly reported \texttt{ABI valid}.
 
 \section*{Q8 - System-call path}
+\textbf{Disassembled \texttt{sleep} stub:}
+\begin{lstlisting}
+00000000000017f2 <sleep>:
+    17f2:       48b5                    li      a7,13
+    17f4:       00000073                ecall
+    17f8:       8082                    ret
+\end{lstlisting}
+
+\textbf{Compact GDB Transcript:}
+\begin{lstlisting}
+(gdb) p $p->pid
+$1 = 3
+(gdb) p $p->name
+$2 = "sleep\000\000\000\000\000\000\000\000\000\000"
+(gdb) p $p->tf->a7
+$3 = 13
+(gdb) p $p->tf->a0
+$4 = 5
+(gdb) p/x $scause
+$5 = 0x8
+(gdb) p/x $sepc
+$6 = 0x17f4
+(gdb) break syscall if cpus[$tp].proc != 0 && cpus[$tp].proc->pid == $labpid
+Breakpoint 2 at 0x8020351e: file kernel/syscall.c, line 120.
+(gdb) continue
+Continuing.
+Breakpoint 2, syscall () at kernel/syscall.c:120
+(gdb) p $p->tf->a7
+$7 = 13
+(gdb) p $p->tf->a0
+$8 = 5
+(gdb) p/x $p->tf->epc
+$9 = 0x17f8
+(gdb) p/x ($p->tf->epc - $ecallpc)
+$10 = 0x4
+(gdb) break sys_sleep if cpus[$tp].proc != 0 && cpus[$tp].proc->pid == $labpid
+Breakpoint 3 at 0x80203322: file kernel/syscall.c, line 75.
+(gdb) continue
+Continuing.
+Breakpoint 3, sys_sleep () at kernel/sysproc.c:54
+(gdb) bt
+#0  sys_sleep () at kernel/sysproc.c:54
+#1  0x000000008020356c in syscall () at kernel/syscall.c:124
+#2  0x000000008020275a in usertrap () at kernel/trap.c:134
+(gdb) break usertrapret if cpus[$tp].proc != 0 && cpus[$tp].proc->pid == $labpid
+Breakpoint 4 at 0x80202868: file kernel/trap.c, line 163.
+(gdb) continue
+Continuing.
+Breakpoint 4, usertrapret () at kernel/trap.c:163
+(gdb) p $p->tf->a0
+$11 = 0
+(gdb) p/x $p->tf->epc
+$12 = 0x17f8
+\end{lstlisting}
+
+\textbf{Path Explanation:}
 \begin{enumerate}
     \item \textbf{User-Space Stub}: The \texttt{sleep.c} program calls \texttt{sleep(5)}. This jumps to the generated assembly stub in \texttt{usys.S}, which loads the system call number 13 into the \texttt{a7} register, leaves the argument (5) in the \texttt{a0} register, and executes the \texttt{ecall} instruction.
     \item \textbf{usertrap()}: The \texttt{ecall} triggers a trap into the kernel. The CPU saves the current Program Counter (PC) into the \texttt{sepc} CSR and sets the cause (\texttt{scause}) to 8 (Environment call from U-mode). The kernel's \texttt{usertrap()} function handles this trap.
