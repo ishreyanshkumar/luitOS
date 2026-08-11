@@ -1,0 +1,31 @@
+# Luit CI: every push must compile warning-clean, boot, and pass public tests.
+name: luit-ci
+on: [push, pull_request]
+jobs:
+  build-and-grade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-unknown-elf \
+            binutils-riscv64-unknown-elf qemu-system-misc python3 make
+      - name: Clean build (warnings are errors)
+        run: make clean && make -j"$(nproc)"
+      - name: Public grade run
+        run: make grade
+      - name: HAL portability builds (SHAKTI, VEGA stubs must compile)
+        run: |
+          make clean && make HAL=shakti kernel.elf
+          make clean && make HAL=vega kernel.elf
+      - name: Upload transcript on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-artifacts
+          path: |
+            kernel.elf
+            kernel.asm
+            kernel.sym
