@@ -69,5 +69,5 @@ static const char *syscall_names[] = {
     [22] "freepages",
     [23] "procstat",
 };
-/* Implementation note. */
+/* silence -Wunused for the names table until Lab 3 uses it */
 static inline const char *syscall_name(int n){ return (n > 0 && n < (int)(sizeof(syscall_names)/sizeof(char*)) && syscall_names[n]) ? syscall_names[n] : "?"; }

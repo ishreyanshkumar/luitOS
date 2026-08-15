@@ -1,17 +1,5 @@
 /* Implementation note. */
 
-
-
-
-
-
-
-
-
-
-
-
-
 #include "types.h"
 #include "defs.h"
 #include "hal.h"
