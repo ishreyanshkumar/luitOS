@@ -1,0 +1,17 @@
+Makefile change for the page-fault lab
+======================================
+
+Add user/pfdemo to the UPROGS variable.
+
+Example:
+
+Before:
+  ... user/usertests user/forktest
+
+After:
+  ... user/usertests user/forktest user/pfdemo
+
+Then rebuild from the Luit root directory:
+
+  make clean
+  make

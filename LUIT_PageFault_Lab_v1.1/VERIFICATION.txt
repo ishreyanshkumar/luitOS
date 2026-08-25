@@ -1,0 +1,23 @@
+LUIT Page-Fault Lab v1.1 — Verification Notes
+==============================================
+
+Static/source checks:
+
+1. pfdemo.c cross-compiles as a RISC-V RV64 object with Clang 17 using
+   the Luit user include files and -Wall -Werror.
+2. temporary_guard_repair.patch applies cleanly to the v1.2.3 trap.c.
+3. The patched trap.c cross-compiles as a RISC-V RV64 object with Clang 17
+   using the generated Luit syscall headers and -Wall -Werror.
+4. The handout's source claims were checked against trap.c, vm.c, proc.c,
+   palloc.c, syscall.c, file.c, fs.c, bio.c, exec.c, riscv.h, and uservec.S.
+5. The regular-file read path was checked as:
+     sys_read -> fileread -> readi(user_dst=1) -> bread -> bp->data -> copyout.
+6. The stack/guard formula used by pfdemo guard was checked against exec.c:
+   one guard page, then one stack page, with p->sz at the top of the stack.
+7. The COW-shaped debugger experiment was checked against sys_sbrk(): at
+   kernel/syscall.c:71 in v1.2.3, growproc() has already succeeded and p->sz
+   has already been increased.
+8. The page-fault GDB helper no longer calls myproc() from GDB; it obtains the
+   current process as cpus[$tp].proc while stopped in a process kernel path.
+9. The main GDB breakpoint is conditional on scause 12/13/15, so it does not
+   stop on every syscall.
