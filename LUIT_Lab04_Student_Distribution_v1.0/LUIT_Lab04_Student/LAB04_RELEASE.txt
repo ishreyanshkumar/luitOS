@@ -1,0 +1,37 @@
+CS3106L - Luit Lab 4 Student Release v1.0
+
+Graded lab: Fault-Driven Heap Allocation in Luit
+
+Complete exactly four TODO regions:
+  K1  kernel/proc.c   - make sbrk() reserve heap memory lazily
+  K2  kernel/vm.c     - materialize one legal lazy heap page
+  K3  kernel/trap.c   - resolve legal user load/store page faults
+  K4  kernel/vm.c     - make copyout/copyin/copyinstr lazy-aware
+
+All code written for Lab 4 must remain inside these four TODO regions. The
+official grader extracts K1-K4 into a clean staff checkpoint. Changes outside
+the regions are not used for grading.
+
+This checkpoint already contains the completed dependencies from earlier labs,
+the timing-stable event-driven QEMU harness, and the firmware boot-hart fix.
+Do not merge an older full Luit tree into this package.
+
+Read:
+  docs/CS3106L_Lab04_Student_Handout_v1.0.pdf
+
+Recommended validation sequence:
+  make lab04-check
+  make clean
+  make
+  make grade
+  make grade LAB=4
+
+The starter checkpoint is intended to build and preserve the earlier baseline,
+but it is also intended to FAIL the Lab 4 functional test until K1-K4 are
+implemented.
+
+Submission:
+  python3 tools/package_lab04.py YOUR_ROLL_NUMBER
+
+Submit only the ZIP produced by the script. No report, screenshot, or full
+source-tree submission is required.
