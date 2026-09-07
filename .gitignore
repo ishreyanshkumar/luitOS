@@ -1,0 +1,25 @@
+# Build artifacts
+*.o
+*.d
+*.img
+*.elf
+*.asm
+*.sym
+*.out
+mkfs/mkfs
+**/mkfs/mkfs
+**/user/initcode
+**/user/initcode.out
+**/user/usys.S
+**/kernel/syscallnums.h
+**/kernel/syscalltab.h
+**/kernel/initcode_blob.S
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor & OS files
+.DS_Store
+*~
+*.swp
