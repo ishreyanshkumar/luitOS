@@ -1,0 +1,29 @@
+CS3106L - Luit Lab 3 Student Release v1.2.3 (timing-stable + boot-hart fix)
+
+Graded task: complete exactly four TODO regions:
+  K1  kernel/usysinfo.c
+  U1  user/ulib.c
+  U2  user/ulib.c
+  U3  user/ulib.c
+
+IMPORTANT: all code you write for Lab 3 must stay inside these four TODO regions.
+The official grader extracts only those regions into a clean staff checkpoint.
+Code added outside them is not used for grading.
+
+Maintenance notes (v1.2.3):
+  - kernel boot no longer assumes OpenSBI selects hart 0; the first payload
+    hart is elected as Luit's boot hart and all remaining QEMU harts are
+    started through SBI HSM;
+  - default boot safety timeout is 120 s (readiness is still event-driven);
+  - public tests wait for the real `luit$` prompt instead of sleeping 5/6 s;
+  - SMP boot checks wait for all requested harts before issuing meminfo;
+  - Lab 3 usitest uses its own PASS/FAIL marker with a safety timeout;
+  - persistence waits for command completion before the abrupt reboot.
+These maintenance changes do not alter K1/U1/U2/U3 requirements or the
+public Lab 3 functional checks.
+
+Submission: run
+  python3 tools/package_lab03.py YOUR_ROLL_NUMBER
+
+Submit only the ZIP produced by that script. No report, screenshot, checksum file,
+or full source tree is required.

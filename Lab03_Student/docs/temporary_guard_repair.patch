@@ -1,0 +1,45 @@
+--- a/kernel/trap.c
++++ b/kernel/trap.c
+@@ -124,15 +124,34 @@
+         intr_on();                   /* syscalls may sleep; let interrupts in */
+         syscall();
+     } else if (scause == 15 || scause == 13) {   /* store / load page fault */
+-        /* THE PAGE-FAULT HOOK. In the baseline, a user page fault is always
+-         * fatal to the process. Copy-on-write fork (Lab 5) resolves write
+-         * faults on PTE_COW pages here; mmap (Lab 10) resolves faults inside
+-         * mapped regions here; the lazy-allocation challenge exercise, if you
+-         * attempt it, lands here too. This is the most-visited line in the course. */
++        /* NON-GRADED PAGE-FAULT PRACTICUM ONLY.
++         * Temporarily turn this program's guard page into a demand-zero page
++         * so students can observe repair -> sret -> same-instruction retry.
++         * Revert this block after the demonstration. */
+         uint64 va = r_stval();
+-        printf("usertrap: pid %d %s at va %p (sepc %p) - killing\n",
+-               p->pid, cause_str(scause), va, p->tf->epc);
+-        p->killed = 1;
++        uint64 va0 = PGROUNDDOWN(va);
++        uint64 guard = PGROUNDUP(p->sz) - 2 * PGSIZE;
++        int repaired = 0;
++
++        if (va0 == guard) {
++            char *mem = palloc();
++            if (mem) {
++                memset(mem, 0, PGSIZE);
++                if (mappages(p->pagetable, va0, PGSIZE, (uint64)mem,
++                             PTE_R | PTE_W | PTE_U) == 0) {
++                    sfence_vma();
++                    repaired = 1;
++                } else {
++                    pfree(mem);
++                }
++            }
++        }
++
++        if (!repaired) {
++            printf("usertrap: pid %d %s at va %p (sepc %p) - killing\n",
++                   p->pid, cause_str(scause), va, p->tf->epc);
++            p->killed = 1;
++        }
+     } else {
+         int which = devintr();
+         if (which == 0) {

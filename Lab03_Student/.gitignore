@@ -1,0 +1,14 @@
+# build artifacts
+*.o
+*.d
+*.img
+kernel.elf
+kernel.asm
+kernel.sym
+mkfs/mkfs
+user/initcode
+user/initcode.out
+user/usys.S
+kernel/syscallnums.h
+kernel/syscalltab.h
+kernel/initcode_blob.S
