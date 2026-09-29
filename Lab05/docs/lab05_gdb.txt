@@ -1,0 +1,53 @@
+CS3106L Lab 5 - compact GDB reference
+======================================
+
+1. Start LUIT halted for GDB (Terminal A)
+
+   make qemu-gdb CPUS=2
+
+2. Attach GDB (Terminal B)
+
+   gdb-multiarch kernel.elf
+
+   If the repository .gdbinit is not auto-loaded:
+
+   (gdb) target remote localhost:1234
+   (gdb) symbol-file kernel.elf
+
+3. Break on blocking/wakeup paths
+
+   (gdb) b sleep
+   (gdb) b wakeup
+   (gdb) c
+
+4. At the LUIT shell, run
+
+   pipe_stress
+
+5. When GDB stops at sleep() or wakeup(), inspect before guessing names
+
+   (gdb) bt
+   (gdb) info args
+   (gdb) info locals
+   (gdb) list
+
+6. If the build exposes the cpus[] array and tp is the hart index, these
+   expressions may be useful:
+
+   (gdb) p $tp
+   (gdb) p cpus[$tp].proc->pid
+   (gdb) p cpus[$tp].proc->state
+   (gdb) p cpus[$tp].proc->chan
+
+   If an expression is not valid in the current release, use 'info args',
+   'info locals', and the source listing instead. Do not invent field names.
+
+7. Once the intended event has been observed, disable or delete the breakpoint
+   so the stress run is not interrupted repeatedly:
+
+   (gdb) disable <breakpoint-number>
+   or
+   (gdb) delete <breakpoint-number>
+
+8. End the debugging session normally. Use ordinary QEMU boots for the final
+   CPUS=1/2/4 correctness runs.

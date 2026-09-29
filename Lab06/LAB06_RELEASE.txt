@@ -1,0 +1,3 @@
+CS3106L Lab 6 - Blocking Mailboxes in LUIT
+Editable implementation file: kernel/mailbox.c
+Syscalls: send=26 recv=27 close=28

@@ -1,0 +1,53 @@
+CS3106L Lab 6 - compact GDB reference
+======================================
+
+Use GDB only after the build succeeds.  Keep the public tests as the primary
+correctness check; GDB is for understanding a blocked execution.
+
+Terminal A
+----------
+make qemu-gdb CPUS=2
+
+Terminal B
+----------
+gdb-multiarch kernel.elf
+
+If the repository .gdbinit was not auto-loaded:
+  target remote localhost:1234
+  symbol-file kernel.elf
+
+Useful breakpoints
+------------------
+break mbox_send
+break mbox_recv
+break mbox_close
+break sleep
+break wakeup
+continue
+
+At a mailbox function:
+  bt
+  info args
+  info locals
+
+At sleep():
+  bt
+
+The caller immediately above sleep() should be your mailbox send or receive
+path when the queue predicate is false.  Inspect the mailbox object from the
+caller frame and verify that its lock is the lock passed to sleep().
+
+At wakeup():
+  bt
+
+Verify which transition made progress possible:
+  successful send   -> receivers may proceed
+  successful recv   -> senders may proceed
+  close             -> both kinds of waiter may need to return
+
+Do not call acquire(), release(), sleep(), or wakeup() manually from GDB.  A
+function call from the debugger can change synchronization state and invalidate
+the experiment.
+
+For a clean rerun, quit QEMU (Ctrl-A then x) and boot again.  Closing a mailbox
+is permanent until the kernel is rebooted.
