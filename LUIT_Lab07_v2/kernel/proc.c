@@ -149,7 +149,7 @@ found:
      * A newly allocated process must not receive an artificial pass advantage. */
     p->sched_tickets = STRIDE_DEFAULT_TICKETS;
     p->sched_stride = STRIDE_BIG / STRIDE_DEFAULT_TICKETS;
-    p->sched_pass = 0;
+    p->sched_pass = stride_floor_snapshot();
     p->sched_dispatches = 0;
     p->sched_last_hart = -1;
     p->sched_migrations = 0;
@@ -282,7 +282,13 @@ int fork(void)
     /* TODO-BEGIN S2: inherit proportional-share policy without inheriting
      * accumulated history.  Set tickets/stride and a sensible initial pass;
      * reset Lab 7 statistics for the child. */
-    (void)stride_floor_snapshot();
+    uint64 floor = stride_floor_snapshot();
+    np->sched_tickets = parent->sched_tickets;
+    np->sched_stride = parent->sched_stride;
+    np->sched_pass = parent->sched_pass > floor ? parent->sched_pass : floor;
+    np->sched_dispatches = 0;
+    np->sched_last_hart = -1;
+    np->sched_migrations = 0;
     /* TODO-END S2 */
 
     trace_fork(parent, np);          /* completed Lab 2 semantics */
@@ -304,8 +310,15 @@ set_tickets(int tickets)
 {
     /* TODO-BEGIN S3: validate and atomically update the current process policy.
      * Keep accumulated pass unchanged so a ticket change does not erase history. */
-    (void)tickets;
-    return -1;
+    if (tickets < STRIDE_MIN_TICKETS || tickets > STRIDE_MAX_TICKETS)
+        return -1;
+
+    struct proc *p = myproc();
+    acquire(&p->lock);
+    p->sched_tickets = tickets;
+    p->sched_stride = STRIDE_BIG / tickets;
+    release(&p->lock);
+    return 0;
     /* TODO-END S3 */
 }
 
@@ -410,15 +423,63 @@ stride_pick_next(struct cpu *c)
     /* TODO-BEGIN S4: implement the global SMP-safe stride selection.
      * Return 0 if no process is runnable.  Otherwise return one RUNNING process
      * with that process's lock still held and stride_lock already released. */
-    (void)c;
+    int hart = (int)(c - cpus);
+
+    acquire(&stride_lock);
+
+    struct proc *best = 0;
+    uint64 best_pass = 0;
+    int best_hart = -1;
+    int best_pid = 0;
+
     for (struct proc *p = proc; p < &proc[NPROC]; p++) {
         acquire(&p->lock);
         if (p->state == RUNNABLE) {
-            p->state = RUNNING;
-            return p;
+            int better = 0;
+            if (best == 0) {
+                better = 1;
+            } else if (p->sched_pass < best_pass) {
+                better = 1;
+            } else if (p->sched_pass == best_pass) {
+                int p_aff = (p->sched_last_hart == hart);
+                int b_aff = (best_hart == hart);
+                if (p_aff && !b_aff) {
+                    better = 1;
+                } else if (p_aff == b_aff) {
+                    if (p->pid < best_pid)
+                        better = 1;
+                }
+            }
+            if (better) {
+                best = p;
+                best_pass = p->sched_pass;
+                best_hart = p->sched_last_hart;
+                best_pid = p->pid;
+            }
         }
         release(&p->lock);
     }
+
+    if (best == 0) {
+        release(&stride_lock);
+        return 0;
+    }
+
+    acquire(&best->lock);
+    if (best->state == RUNNABLE) {
+        stride_floor_publish(best->sched_pass);
+        best->sched_dispatches++;
+        if (best->sched_last_hart >= 0 && best->sched_last_hart != hart)
+            best->sched_migrations++;
+        best->sched_last_hart = hart;
+        best->sched_pass += best->sched_stride;
+        best->state = RUNNING;
+        release(&stride_lock);
+        return best;
+    }
+
+    release(&best->lock);
+    release(&stride_lock);
     return 0;
     /* TODO-END S4 */
 }
@@ -501,8 +562,12 @@ void wakeup(void *chan)
     for (struct proc *p = proc; p < &proc[NPROC]; p++) {
         if (p != myproc()) {
             acquire(&p->lock);
-            if (p->state == SLEEPING && p->chan == chan)
+            if (p->state == SLEEPING && p->chan == chan) {
+                uint64 floor = stride_floor_snapshot();
+                if (p->sched_pass < floor)
+                    p->sched_pass = floor;
                 p->state = RUNNABLE;
+            }
             release(&p->lock);
         }
     }
@@ -517,7 +582,12 @@ int kill(int pid)
         acquire(&p->lock);
         if (p->pid == pid) {
             p->killed = 1;
-            if (p->state == SLEEPING) p->state = RUNNABLE;
+            if (p->state == SLEEPING) {
+                uint64 floor = stride_floor_snapshot();
+                if (p->sched_pass < floor)
+                    p->sched_pass = floor;
+                p->state = RUNNABLE;
+            }
             release(&p->lock);
             return 0;
         }
