@@ -1,0 +1,6 @@
+CS3106L Lab 7 release
+Topic: deterministic proportional-share stride scheduling on SMP LUIT
+Editable implementation: kernel/proc.c, S1-S6 plus LAB7-HELPERS only
+Syscalls: 29 settickets, 30 schedinfo
+Public programs: stride_api, stride_share, stride_wakeup, stride_smp
+Complete repository: no copying from earlier labs is required.

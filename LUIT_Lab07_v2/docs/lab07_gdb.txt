@@ -1,0 +1,27 @@
+Lab 7 compact GDB reference
+
+Start LUIT:
+  make qemu-gdb CPUS=1
+
+In another terminal:
+  riscv64-unknown-elf-gdb kernel.elf
+
+Useful breakpoints:
+  b stride_pick_next
+  b yield
+  b sleep
+  b wakeup
+  b swtch
+
+Useful fields for a struct proc *p:
+  p p->pid
+  p p->state
+  p p->sched_tickets
+  p p->sched_stride
+  p p->sched_pass
+  p p->sched_dispatches
+  p p->sched_last_hart
+  p p->sched_migrations
+
+The selected process must leave stride_pick_next() with p->lock held,
+state RUNNING, and stride_lock released.
