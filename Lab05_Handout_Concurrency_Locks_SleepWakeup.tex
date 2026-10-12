@@ -1,0 +1,585 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[a4paper,margin=18mm,top=16mm,bottom=17mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{Carlito}
+\setsansfont{Carlito}
+\setmonofont{DejaVu Sans Mono}[Scale=0.88]
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{parskip}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\definecolor{DeepBlue}{HTML}{17365D}
+\definecolor{SoftGray}{HTML}{F4F4F4}
+\definecolor{Warn}{HTML}{8A4B08}
+
+\hypersetup{colorlinks=true,linkcolor=DeepBlue,urlcolor=DeepBlue}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{CS3106L Operating Systems Laboratory}
+\rhead{Lab 5: Concurrency Practicum}
+\cfoot{Page \thepage\ of \pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\setlength{\headheight}{14pt}
+
+\lstdefinestyle{code}{
+  basicstyle=\ttfamily\small,
+  frame=single,
+  framesep=5pt,
+  xleftmargin=3pt,
+  xrightmargin=3pt,
+  breaklines=true,
+  showstringspaces=false,
+  columns=fullflexible
+}
+\lstset{style=code}
+
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\cmd}[1]{\texttt{#1}}
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries CS3106L Operating Systems Laboratory}\\[2mm]
+{\LARGE\bfseries Lab 5: Concurrency, Locks, and Sleep/Wakeup}\\[2mm]
+Department of Computer Science and Engineering, IIT Guwahati
+\end{center}
+
+\hrule
+\vspace{4mm}
+
+Complete the practicum in a scratch copy or scratch Git branch of the completed Lab 4 LUIT tree.
+
+\textbf{Central idea:}
+\[
+\boxed{\text{observe a race} \rightarrow \text{understand atomic locking} \rightarrow
+\text{observe blocking} \rightarrow \text{explain lost-wakeup avoidance}}
+\]
+
+This practicum does not ask you to redesign the scheduler or reimplement synchronization primitives. The purpose is to connect the concurrency mechanisms discussed in theory to working code: first with a controlled host-side race, then with LUIT's existing spinlocks and pipe sleep/wakeup path.
+
+\section{What you should be able to explain at the end}
+
+After completing the practicum, you should be able to explain all of the following without memorizing a code listing:
+
+\begin{enumerate}[leftmargin=7mm]
+\item why a read-modify-write such as \file{counter++} is not automatically atomic;
+\item how a legal interleaving can lose an update;
+\item why a lock implementation itself needs an atomic read-modify-write operation;
+\item how LUIT's \file{acquire()} and \file{release()} provide cross-hart mutual exclusion;
+\item why \file{push\_off()} / \file{pop\_off()} solve a different problem from the atomic lock word;
+\item why nested interrupt-disable state must be tracked;
+\item why spinning is appropriate only for short waits;
+\item how a bounded pipe creates a real condition on which a process may have to sleep;
+\item what a sleep channel means in LUIT;
+\item why \file{sleep(chan, lock)} takes the lock as an argument;
+\item how an unlock-then-sleep gap can lose a wakeup; and
+\item why a woken process must re-check the shared predicate.
+\end{enumerate}
+
+\section{Scope and safety rules}
+
+Use a scratch copy or scratch Git branch of the completed Lab 4 tree. Preserve all earlier work.
+
+For this practicum:
+
+\begin{itemize}[leftmargin=7mm]
+\item Do \textbf{not} modify \file{kernel/spinlock.c}.
+\item Do \textbf{not} modify the scheduler or context-switch code.
+\item Do \textbf{not} modify \file{kernel/proc.c}.
+\item Do \textbf{not} add or renumber system calls.
+\item Do \textbf{not} edit generated syscall files.
+\item Do \textbf{not} make the pipe larger merely to avoid blocking.
+\item Do \textbf{not} add arbitrary delays as a synchronization fix.
+\end{itemize}
+
+Only one LUIT source file is added by this package: \file{user/pipe\_stress.c}. The host-side race demonstration is built and run on Linux, outside LUIT.
+
+\section{Part 0 - Establish a clean baseline}
+
+From the root of the completed Lab 4 tree:
+
+\begin{lstlisting}[language=bash]
+make clean
+make
+make grade
+\end{lstlisting}
+
+Do not proceed if the completed tree no longer passes the regression suite that passed before this practicum. Fix the existing tree first rather than debugging concurrency on top of a broken baseline.
+
+Copy the preflight checker and LUIT demonstration program from this package:
+
+\begin{lstlisting}[language=bash]
+cp <PACKAGE>/tools/lab05_preflight.py tools/
+cp <PACKAGE>/user/pipe_stress.c user/
+python3 tools/lab05_preflight.py
+\end{lstlisting}
+
+The checker verifies the source-tree assumptions used by the practicum: the syscall-table source of truth, the existing calls used by \file{pipe\_stress}, the LUIT spinlock primitives, sleep/wakeup symbols, and pipe read/write paths.
+
+The final line must be:
+
+\begin{lstlisting}
+LAB5 preflight: PASS
+\end{lstlisting}
+
+If the checker fails, read the exact diagnostic. Do not patch a missing mechanism merely to make the checker green.
+
+\section{Part A - Reproduce a lost update on the Linux host}
+
+The first experiment deliberately stays outside the kernel. It isolates one idea: a compound update can be incorrect even when each individual load and store is well defined.
+
+Change to the package directory and build:
+
+\begin{lstlisting}[language=bash]
+gcc -O2 -Wall -Wextra -pthread -std=c11 \
+    host/race_demo.c -o race_demo
+\end{lstlisting}
+
+Run the intentionally unsafe version:
+
+\begin{lstlisting}[language=bash]
+./race_demo unsafe 4 200000
+\end{lstlisting}
+
+A typical run looks like:
+
+\begin{lstlisting}
+mode=unsafe threads=4 increments/thread=200000
+expected=800000 actual=<smaller value> lost=<positive value>
+OBSERVED: lost update(s)
+\end{lstlisting}
+
+The exact wrong value is not prescribed. Concurrency schedules are nondeterministic. If one run happens to produce the expected value, repeat the program:
+
+\begin{lstlisting}[language=bash]
+for i in 1 2 3 4 5; do ./race_demo unsafe 4 200000; done
+\end{lstlisting}
+
+Now run the protected version:
+
+\begin{lstlisting}[language=bash]
+./race_demo mutex 4 200000
+\end{lstlisting}
+
+This run must end with:
+
+\begin{lstlisting}
+expected=800000 actual=800000 lost=0
+PASS: mutex protected the compound update
+\end{lstlisting}
+
+\subsection*{Reason about one failure}
+
+Write down one legal interleaving for two increments starting from 20:
+
+\begin{lstlisting}
+Thread/Hart A                    Thread/Hart B
+load old value -> 20             load old value -> 20
+compute 21                       compute 21
+store 21                         store 21
+\end{lstlisting}
+
+Two increments were requested, but the shared value ends at 21. The failure is not that addition is mathematically wrong. The failure is that the compound operation \emph{load -- modify -- store} was allowed to overlap another compound operation.
+
+\paragraph{Checkpoint A.} Be able to answer: Why would declaring the shared variable \file{volatile} not turn this compound update into an atomic operation?
+
+\section{Part B - Read the LUIT spinlock before using it}
+
+Return to the LUIT tree. Open \file{kernel/spinlock.c}. Locate \file{acquire()}, \file{release()}, \file{push\_off()}, \file{pop\_off()}, and \file{holding()}.
+
+In the course LUIT implementation, the important conceptual path is:
+
+\begin{lstlisting}
+acquire(lock)
+    push_off()                         local interrupt discipline
+    reject self-acquire               avoid silent self-deadlock
+    atomic read-modify-write loop     cross-hart ownership
+    memory-ordering barrier
+    record owner metadata
+
+release(lock)
+    verify ownership
+    clear owner metadata
+    memory-ordering barrier
+    atomically release lock word
+    pop_off()                          restore nested interrupt state
+\end{lstlisting}
+
+Do not confuse the two jobs:
+
+\begin{center}
+\begin{tabularx}{0.92\textwidth}{@{}p{42mm}X@{}}
+\toprule
+\textbf{Mechanism} & \textbf{What it prevents} \\
+\midrule
+atomic lock operation & two harts entering the same critical section \\
+\file{push\_off()/pop\_off()} & same-hart interrupt re-entry causing self-deadlock while a kernel spinlock is held \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Why a plain flag is not a lock}
+
+The following is incorrect:
+
+\begin{lstlisting}[language=C]
+while (lk->locked)
+    ;
+lk->locked = 1;
+\end{lstlisting}
+
+Construct this execution:
+
+\begin{lstlisting}
+Hart 0                         Hart 1
+read locked -> 0               read locked -> 0
+write locked = 1               write locked = 1
+enter critical section         enter critical section
+\end{lstlisting}
+
+Both harts pass the test. Therefore the transition from ``observed free'' to ``claimed'' must be atomic.
+
+\subsection{Inspect the generated RISC-V code}
+
+Build LUIT, then inspect the generated code for \file{acquire()}:
+
+\begin{lstlisting}[language=bash]
+make
+riscv64-unknown-elf-objdump -d kernel.elf | \
+    sed -n '/<acquire>:/,+45p'
+\end{lstlisting}
+
+Locate the instruction sequence that implements the compiler atomic operation. The exact lowering depends on the compiler and toolchain; it may use an AMO or an LR/SC loop. Do not expect one required mnemonic. The architectural requirement is an atomic read-modify-write with appropriate ordering.
+
+\paragraph{Checkpoint B.} Identify which source statement provides ownership and which statements/operations provide ordering. Explain why these are related but not identical properties.
+
+\section{Part C - Integrate the LUIT pipe stress program}
+
+The package supplies \file{user/pipe\_stress.c}. It uses only system calls that already exist in LUIT. It does not introduce a new kernel ABI.
+
+Open the top-level Makefile and find \file{UPROGS}. Add \file{user/pipe\_stress} following the exact syntax already used for the other user binaries. Do not edit generated syscall files.
+
+Rebuild and re-run the baseline:
+
+\begin{lstlisting}[language=bash]
+make clean
+make
+make grade
+\end{lstlisting}
+
+The existing regression suite must still pass.
+
+\subsection{What the program does}
+
+The program creates one pipe and four writer processes. Each writer sends exactly 2048 one-byte tokens. Therefore:
+
+\[
+4 \times 2048 = 8192\ \text{bytes}
+\]
+
+The parent closes its own write descriptor, waits briefly, and then drains the pipe. The delay is not a synchronization solution; it is only an observation aid that gives writers an opportunity to fill a bounded pipe and enter the existing kernel blocking path before the reader starts draining it.
+
+The reader counts every token and validates both the total and the contribution from each writer. The final marker must be:
+
+\begin{lstlisting}
+PIPE_STRESS: PASS
+\end{lstlisting}
+
+\subsection{Run with one hart}
+
+Boot:
+
+\begin{lstlisting}[language=bash]
+make qemu CPUS=1
+\end{lstlisting}
+
+At the LUIT shell:
+
+\begin{lstlisting}
+pipe_stress
+\end{lstlisting}
+
+A correct final summary is:
+
+\begin{lstlisting}
+pipe_stress: received=8192 expected=8192
+pipe_stress: writer 0 count=2048 expected=2048
+pipe_stress: writer 1 count=2048 expected=2048
+pipe_stress: writer 2 count=2048 expected=2048
+pipe_stress: writer 3 count=2048 expected=2048
+PIPE_STRESS: PASS
+\end{lstlisting}
+
+Exit QEMU using the normal repository/QEMU exit sequence before changing the hart count.
+
+\subsection{Repeat with two and four harts}
+
+Run separate clean boots:
+
+\begin{lstlisting}[language=bash]
+make qemu CPUS=2
+# run: pipe_stress
+
+make qemu CPUS=4
+# run: pipe_stress
+\end{lstlisting}
+
+The ordering of process execution is free to change. The validated byte counts must not change.
+
+\paragraph{Checkpoint C.} Explain why correctness cannot depend on one particular interleaving of the four writers.
+
+\section{Part D - Find the real condition and lock in the pipe code}
+
+Do not assume a file name. Locate the code in the current tree:
+
+\begin{lstlisting}[language=bash]
+grep -RIn 'pipewrite\|piperead' kernel
+grep -RIn '^[[:space:]]*sleep[[:space:]]*(' kernel
+grep -RIn '^[[:space:]]*wakeup[[:space:]]*(' kernel
+\end{lstlisting}
+
+Open the matching implementation and identify the shared pipe state. The exact field names are release-specific, but the logic must answer these questions:
+
+\begin{enumerate}[leftmargin=7mm]
+\item What state tells a writer that the bounded pipe has no room?
+\item What state tells a reader that there is no data yet?
+\item Which lock protects those fields?
+\item On what channel/key does a blocked writer sleep?
+\item On what channel/key does a blocked reader sleep?
+\item After which state change does the writer wake readers?
+\item After which state change does the reader wake writers?
+\item Why is the wait condition re-checked after a wakeup?
+\end{enumerate}
+
+Do not confuse a \emph{sleep channel} with a pipe that carries bytes. A channel is a wait key used to associate sleepers with an event/condition whose state may have changed.
+
+\section{Part E - Observe blocking and waking in GDB}
+
+Use the compact reference in \file{docs/lab05\_gdb.txt} while doing this part.
+
+First locate the symbols in the current source tree as shown in Part D. Then use two terminals.
+
+\subsection*{Terminal A}
+
+\begin{lstlisting}[language=bash]
+make qemu-gdb CPUS=2
+\end{lstlisting}
+
+\subsection*{Terminal B}
+
+\begin{lstlisting}[language=bash]
+gdb-multiarch kernel.elf
+\end{lstlisting}
+
+The repository's \file{.gdbinit} normally connects to QEMU. If it is not auto-loaded, use:
+
+\begin{lstlisting}
+target remote localhost:1234
+symbol-file kernel.elf
+\end{lstlisting}
+
+Set breakpoints on the real symbols that you located. Typical symbol names are:
+
+\begin{lstlisting}
+b sleep
+b wakeup
+c
+\end{lstlisting}
+
+At the LUIT shell, run:
+
+\begin{lstlisting}
+pipe_stress
+\end{lstlisting}
+
+When a process reaches \file{sleep()}, inspect the call stack and confirmed arguments/locals:
+
+\begin{lstlisting}
+bt
+info args
+info locals
+list
+p cpus[$tp].proc->pid
+p cpus[$tp].proc->state
+p cpus[$tp].proc->chan
+\end{lstlisting}
+
+Exact local-variable names may differ across releases. Never guess a local name in GDB: use \file{info args} and \file{info locals} first.
+
+The important observation is the control-flow relationship:
+
+\begin{lstlisting}
+writer sees pipe full
+        |
+        v
+sleep(channel, pipe-lock)
+        |
+process becomes SLEEPING
+        |
+reader removes data and changes pipe state
+        |
+        v
+wakeup(channel)
+        |
+process becomes eligible to run again
+        |
+writer re-checks the full/not-full predicate
+\end{lstlisting}
+
+Disable or delete a breakpoint after you have observed the intended event; otherwise a stress test may stop many times.
+
+\paragraph{Checkpoint D.} Explain why \file{wakeup()} means ``the state may now permit progress'' rather than ``the condition is guaranteed true when this process next runs.''
+
+\section{Part F - Reconstruct the lost-wakeup bug}
+
+Consider this deliberately broken waiting shape:
+
+\begin{lstlisting}[language=C]
+acquire(&lock);
+if (!condition) {
+    release(&lock);
+    sleep_somehow();
+}
+\end{lstlisting}
+
+Construct the following schedule:
+
+\begin{lstlisting}
+waiter                              signaler
+------                              --------
+acquire(lock)
+check condition -> false
+release(lock)
+                                    acquire(lock)
+                                    make condition true
+                                    wakeup(...)
+                                    release(lock)
+sleep_somehow()
+\end{lstlisting}
+
+The wakeup occurred before the waiter actually became asleep. If no later state change generates another wakeup, the waiter can remain asleep forever.
+
+Now compare the LUIT-style pattern:
+
+\begin{lstlisting}[language=C]
+acquire(&lock);
+while (!condition)
+    sleep(chan, &lock);
+/* lock is held again here */
+release(&lock);
+\end{lstlisting}
+
+The lock argument lets the kernel coordinate releasing the condition lock with the transition to the sleeping state so that the signaler cannot slip through the dangerous gap.
+
+The \file{while} is equally important. A wakeup says only that relevant shared state changed. Before proceeding, the woken execution must regain the lock and check whether the predicate is actually true for it.
+
+\paragraph{Checkpoint E.} Give one reason that a process can wake and later find the predicate false again. Examples include another runnable process consuming the newly available resource first, or a broadcast-style wake that wakes more than one waiter.
+
+\section{Part G - Explain why LUIT disables local interrupts around spinlocks}
+
+Cross-hart exclusion and local interrupt control solve different problems.
+
+Suppose Hart 0 executes:
+
+\begin{lstlisting}
+acquire(&L);
+... kernel critical section ...
+\end{lstlisting}
+
+If an interrupt were allowed to arrive on the same hart and its handler attempted \file{acquire(\&L)}, the handler would spin waiting for a lock owned by the interrupted execution. The interrupted execution cannot resume to release \file{L} until the handler returns. This is same-hart self-deadlock.
+
+That is why LUIT's lock discipline disables local interrupts before taking the spinlock and restores the previous local state after release.
+
+Now consider nesting:
+
+\begin{lstlisting}
+push_off();     // depth 1, interrupts off
+push_off();     // depth 2, still off
+pop_off();      // depth 1, must remain off
+pop_off();      // depth 0, restore original state
+\end{lstlisting}
+
+A naive ``disable in acquire, enable in every release'' rule could enable interrupts when the inner lock is released even though an outer protected region is still active.
+
+\paragraph{Checkpoint F.} Explain why disabling interrupts on Hart 0 does not provide mutual exclusion against Hart 1. What provides that cross-hart exclusion instead?
+
+\section{Part H - Final regression and understanding check}
+
+End the debugging session and remove temporary GDB breakpoints. In the scratch branch, keep the added \file{user/pipe\_stress.c} file and its Makefile \file{UPROGS} entry.
+
+Rebuild from a clean state:
+
+\begin{lstlisting}[language=bash]
+make clean
+make
+make grade
+python3 tools/lab05_preflight.py
+\end{lstlisting}
+
+Then boot at least once with multiple harts and confirm:
+
+\begin{lstlisting}
+pipe_stress
+\end{lstlisting}
+
+ends with:
+
+\begin{lstlisting}
+PIPE_STRESS: PASS
+\end{lstlisting}
+
+Finish by checking that every statement below can be explained from source code or an observed execution rather than from memorization.
+
+\begin{itemize}[leftmargin=7mm]
+\item[$\square$] I can draw a lost-update interleaving.
+\item[$\square$] I can explain why a lock needs atomic acquisition.
+\item[$\square$] I can distinguish lock ownership from memory ordering.
+\item[$\square$] I can explain why interrupt disabling is hart-local.
+\item[$\square$] I can explain the same-hart interrupt self-deadlock scenario.
+\item[$\square$] I can explain why \file{push\_off()/pop\_off()} track nesting.
+\item[$\square$] I can identify the predicate and protecting lock in the LUIT pipe path.
+\item[$\square$] I can explain when pipe writers/readers sleep and what wakes them.
+\item[$\square$] I can explain what a sleep channel is.
+\item[$\square$] I can construct the lost-wakeup schedule.
+\item[$\square$] I can explain why \file{sleep(chan, lock)} takes a lock.
+\item[$\square$] I can explain why a waiting condition is tested in a \file{while} loop.
+\item[$\square$] I can distinguish spinning from sleeping.
+\item[$\square$] I can run the same synchronization workload correctly with 1, 2, and 4 harts.
+\end{itemize}
+
+\section*{Reading connection}
+
+For the textbook view, revisit the OSTEP chapters on locks and condition variables. Map the abstract ideas to the LUIT mechanisms observed here:
+
+\begin{center}
+\begin{tabularx}{0.96\textwidth}{@{}p{43mm}X@{}}
+\toprule
+\textbf{General concept} & \textbf{LUIT mechanism observed here} \\
+\midrule
+atomic lock acquisition & compiler atomic RMW in \file{acquire()} \\
+short critical-section waiting & spinlock \\
+local interrupt discipline & \file{push\_off()/pop\_off()} \\
+wait for shared predicate & \file{sleep(chan, lock)} \\
+wake possible waiters & \file{wakeup(chan)} \\
+re-check after wake & \file{while} around the condition \\
+bounded producer/consumer state & kernel pipe buffer \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\vfill
+\begin{center}
+\textbf{End of Lab 5 Practicum}
+\end{center}
+
+\end{document}

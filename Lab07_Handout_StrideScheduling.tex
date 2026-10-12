@@ -1,0 +1,352 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[a4paper,margin=16mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{Carlito}
+\setsansfont{Carlito}
+\usepackage{listings}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{4pt}
+\setlist[itemize]{leftmargin=6mm,itemsep=2pt,topsep=2pt}
+\setlist[enumerate]{leftmargin=7mm,itemsep=2pt,topsep=2pt}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{CS3106L Operating Systems Laboratory}
+\rhead{Lab 7: Stride Scheduling}
+\cfoot{\thepage}
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection.}{0.5em}{}
+\lstset{
+  basicstyle=\ttfamily\small,
+  frame=single,
+  framerule=0.4pt,
+  backgroundcolor=\color{white},
+  breaklines=true,
+  columns=fullflexible,
+  showstringspaces=false,
+  xleftmargin=2mm,
+  xrightmargin=2mm,
+  aboveskip=5pt,
+  belowskip=5pt
+}
+\newcommand{\file}[1]{\texttt{#1}}
+\begin{document}
+
+\begin{center}
+{\LARGE\bfseries CS3106L Operating Systems Laboratory}\\[3pt]
+{\Large\bfseries Lab 7: Deterministic Proportional-Share Scheduling in LUIT}\\[3pt]
+{\large Stride scheduling, fair admission, wakeup compensation, and SMP-safe selection}
+\end{center}
+
+\section{Starting point}
+
+Use the supplied \file{LUIT\_Lab07} repository directly. It is a complete LUIT checkpoint: kernel sources, user library, HAL, filesystem builder, top-level Makefile, completed dependencies from earlier labs, public programs, checking tools, and this handout are already included. Do not copy files from Lab 6, another LUIT tree, or xv6.
+
+The completed Lab 6 mailbox implementation is already part of this checkpoint. The only Lab 7 implementation file that may be changed is:
+
+\begin{lstlisting}
+kernel/proc.c
+\end{lstlisting}
+
+Only the six marked regions \file{S1--S6} and the optional \file{LAB7-HELPERS} region are editable. Keep every marker intact.
+
+Before editing anything:
+
+\begin{lstlisting}
+python3 tools/lab07_check.py
+make clean
+make
+make grade
+\end{lstlisting}
+
+The release checker must pass before work begins. A build failure in the untouched checkpoint indicates an environment/toolchain problem, not a scheduling task.
+
+\section{What is being implemented}
+
+The baseline LUIT scheduler scans the process table and runs a RUNNABLE process. Replace only its scheduling \emph{policy} with deterministic proportional-share stride scheduling. The context-switch \emph{mechanism} is supplied and must remain unchanged.
+
+Each process has the supplied fields:
+
+\begin{lstlisting}[language=C]
+int    sched_tickets;
+uint64 sched_stride;
+uint64 sched_pass;
+uint64 sched_dispatches;
+int    sched_last_hart;
+uint64 sched_migrations;
+\end{lstlisting}
+
+The constants are supplied in \file{kernel/schedinfo.h}:
+
+\begin{lstlisting}[language=C]
+STRIDE_DEFAULT_TICKETS = 100
+STRIDE_MIN_TICKETS     = 1
+STRIDE_MAX_TICKETS     = 1000
+STRIDE_BIG             = 10000000
+\end{lstlisting}
+
+For a process with $T$ tickets:
+
+\[
+\texttt{stride}=\left\lfloor\frac{\texttt{STRIDE\_BIG}}{T}\right\rfloor.
+\]
+
+More tickets therefore produce a smaller stride. At every dispatch, select the RUNNABLE process with the smallest \file{sched\_pass}; before it runs, add its stride to its pass.
+
+\section{Exact Lab 7 scheduling contract}
+
+The following rules define correctness. Do not substitute a different stride variant.
+
+\subsection{Tickets and stride}
+
+Every fresh process slot starts with 100 tickets. \file{settickets(n)} accepts only $1\le n\le1000$. An invalid request returns $-1$ and changes nothing. A valid request updates tickets and stride but \textbf{does not reset pass}. Resetting pass would erase already received CPU service and create a fairness exploit.
+
+A child created by \file{fork()} inherits the parent's ticket count. Its Lab 7 statistics begin from zero.
+
+\subsection{Pass and the global floor}
+
+A sleeping or newly admitted process must not return with an old very small pass and monopolize the CPU while it ``catches up.'' The checkpoint therefore supplies a global \file{stride\_floor}, plus:
+
+\begin{lstlisting}[language=C]
+stride_floor_snapshot();
+stride_floor_publish(value);
+\end{lstlisting}
+
+The floor is the pass value of the most recently selected global minimum, measured \emph{before} that selected process is charged its stride.
+
+Use these rules:
+
+\begin{itemize}
+\item A fresh slot starts at the current floor.
+\item On \file{fork()}, the child pass is at least the current floor and must not be less than the parent's current pass.
+\item When \file{wakeup()} changes a process from SLEEPING to RUNNABLE, clamp its pass upward to at least the current floor.
+\item If \file{kill()} wakes a sleeping process, apply the same clamp.
+\end{itemize}
+
+This is the Lab 7 answer to the ``new arrivals need a sensible initial pass'' and stale-sleeper problems discussed with stride scheduling.
+
+\subsection{Selection order}
+
+For each scheduling decision, compare only RUNNABLE processes. The key order is:
+
+\begin{enumerate}
+\item smaller \file{sched\_pass};
+\item if pass is equal, prefer a process whose \file{sched\_last\_hart} equals the current hart;
+\item if still tied, smaller PID.
+\end{enumerate}
+
+The second rule is a small affinity-aware tie break. It must never override a lower pass value.
+
+\subsection{Statistics}
+
+Exactly once for every actual dispatch:
+
+\begin{itemize}
+\item increment \file{sched\_dispatches};
+\item if \file{sched\_last\_hart} is valid and differs from the current hart, increment \file{sched\_migrations};
+\item set \file{sched\_last\_hart} to the current hart;
+\item charge \file{sched\_pass += sched\_stride}.
+\end{itemize}
+
+Do not count a process merely because it was inspected during a scan.
+
+\section{SMP locking contract}
+
+This lab is not a single-hart simulator. Several LUIT scheduler loops may execute concurrently.
+
+The supplied \file{stride\_lock} serializes the global selection/charge operation. The intended lock discipline is:
+
+\begin{enumerate}
+\item acquire \file{stride\_lock};
+\item inspect one process at a time while holding that process's \file{p->lock};
+\item never hold two process locks simultaneously while scanning;
+\item identify the best candidate, then reacquire that candidate's lock;
+\item while both locks are held, confirm it is still RUNNABLE, charge its stride, update Lab 7 statistics, and mark it RUNNING;
+\item release \file{stride\_lock};
+\item return the selected process with only \file{p->lock} still held.
+\end{enumerate}
+
+\textbf{Never hold \file{stride\_lock} across \file{swtch()}.} Doing so can stop every other hart from making a scheduling decision while the selected process runs.
+
+The supplied \file{scheduler()} body performs the address-space switch, Lab 3 publication, \file{swtch()}, kernel page-table restoration, and final process-lock release. Do not move those operations into an editable region.
+
+\section{Task S1 - fresh process state}
+
+Complete \file{S1} inside \file{allocproc()}.
+
+Initialize all Lab 7 fields. The process must start with default tickets and the corresponding stride, zero dispatch/migration counters, no previous hart, and a pass that does not start behind the current system floor.
+
+A reused process-table slot must not retain scheduler history from its previous owner. The supplied \file{freeproc()} already clears the fields when a process is reclaimed.
+
+\section{Task S2 - fork inheritance without a head start}
+
+Complete \file{S2} in \file{fork()}.
+
+The child inherits the parent's tickets and therefore the corresponding stride. Do not copy the parent's dispatch or migration counters. Use a pass value that is at least both the parent's current pass and the current floor.
+
+Why this matters: assigning every child pass zero lets a process repeatedly fork new children that jump ahead of existing runnable work.
+
+\section{Task S3 - dynamic ticket changes}
+
+Complete \file{set\_tickets()} in \file{S3}.
+
+Requirements:
+
+\begin{itemize}
+\item reject values outside 1--1000;
+\item protect the current process's scheduler fields with its process lock;
+\item recompute stride from the supplied constant;
+\item preserve the accumulated pass;
+\item return 0 on success and $-1$ on rejection.
+\end{itemize}
+
+The syscall boundary and user stub are already supplied. Do not edit \file{kernel/schedlab.c}, \file{kernel/syscall.tbl}, or \file{user/ulib.h}.
+
+\section{Task S4 - global stride selection}
+
+Complete \file{stride\_pick\_next()} in \file{S4}. This is the main task.
+
+The helper must return either:
+
+\begin{itemize}
+\item \file{0}, with no locks held, when no process is RUNNABLE; or
+\item a pointer to one process that has already been changed to RUNNING, with \file{p->lock} held and \file{stride\_lock} released.
+\end{itemize}
+
+Implement the exact key order given earlier. Publish the selected pre-charge pass as the new floor, then charge the selected process and update statistics exactly once.
+
+Do not return a pointer obtained from an unlocked scan and then blindly run it. Another hart may have selected it. The final candidate state must be checked while its process lock is held and while the global selection lock still excludes another stride decision.
+
+\section{Tasks S5 and S6 - wakeup compensation}
+
+\file{S5} modifies \file{wakeup()}; \file{S6} modifies the sleeping-process branch of \file{kill()}.
+
+Preserve the original process-state semantics. The additional Lab 7 rule is only this: immediately before a sleeping process becomes RUNNABLE, clamp its pass to the current floor if its saved pass is smaller.
+
+Do not change a process's ticket count on sleep or wakeup. Do not reset its pass to zero. Do not reward an I/O-bound process with an arbitrary new priority; this lab remains a proportional-share scheduler.
+
+\section{Supplied observability API}
+
+Two Lab 7 system calls are already wired:
+
+\begin{lstlisting}[language=C]
+int settickets(int tickets);
+int schedinfo(struct schedinfo *out);
+\end{lstlisting}
+
+\file{schedinfo()} returns a snapshot of the calling process:
+
+\begin{lstlisting}[language=C]
+struct schedinfo {
+    int pid;
+    int tickets;
+    uint64 stride;
+    uint64 pass;
+    uint64 dispatches;
+    int last_hart;
+    uint64 migrations;
+};
+\end{lstlisting}
+
+These calls exist to make the scheduling policy observable and testable. They are not an invitation to modify the ABI.
+
+\section{Public verification}
+
+Use the complete public suite:
+
+\begin{lstlisting}
+python3 tools/lab07_check.py
+make clean
+make
+make grade LAB=7
+\end{lstlisting}
+
+The public Lab 7 programs are protected infrastructure:
+
+\begin{center}
+\begin{tabularx}{0.96\textwidth}{@{}p{32mm}X@{}}
+\toprule
+\textbf{Program} & \textbf{What it exercises} \\
+\midrule
+\file{stride\_api} & default policy, input validation, stride calculation, fork inheritance \\
+\file{stride\_share} & 100:50:250 deterministic proportional share on one hart \\
+\file{stride\_wakeup} & stale-pass sleeper compensation after a long blocking interval \\
+\file{stride\_smp} & progress and ticket weighting under four-hart contention; scheduler statistics \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Expected final markers are:
+
+\begin{lstlisting}
+STRIDE_API: PASS
+STRIDE_SHARE: PASS
+STRIDE_WAKEUP: PASS
+STRIDE_SMP: PASS
+LAB7 PUBLIC: PASS
+\end{lstlisting}
+
+The public tests are not exhaustive. In particular, do not assume that one favorable SMP schedule proves correctness.
+
+\section{Failure patterns to diagnose}
+
+\begin{tabularx}{\textwidth}{@{}p{46mm}X@{}}
+\toprule
+\textbf{Symptom} & \textbf{Likely reason} \\
+\midrule
+All workers receive similar shares & baseline scan still chooses processes; pass is not the primary key \\
+A new child dominates immediately & child pass incorrectly initialized to zero or below the floor \\
+A process dominates after long blocking & wakeup pass was not clamped \\
+System hangs on multiple harts & global selection lock held across \file{swtch()}, or incorrect process-lock ownership \\
+Same process runs on two harts & candidate selected from an unlocked stale snapshot without protected final claim \\
+Ticket change gives sudden huge advantage & \file{settickets()} reset pass \\
+Migration counter exceeds dispatches & migration counted during scans rather than actual dispatches \\
+Baseline tests regress & context-switch mechanism or non-Lab-7 source was changed \\
+\bottomrule
+\end{tabularx}
+
+For GDB, the most useful breakpoints are \file{stride\_pick\_next}, \file{yield}, \file{sleep}, \file{wakeup}, and \file{swtch}. Inspect \file{sched\_tickets}, \file{sched\_stride}, \file{sched\_pass}, and \file{sched\_last\_hart} while holding the relevant process lock.
+
+\section{Submission archive}
+
+After the complete public suite passes:
+
+\begin{lstlisting}
+python3 tools/package_lab07.py YOUR_NINE_DIGIT_ROLL
+\end{lstlisting}
+
+This creates:
+
+\begin{lstlisting}
+YOUR_NINE_DIGIT_ROLL_Lab07.zip
+`-- YOUR_NINE_DIGIT_ROLL_Lab07/
+    `-- kernel/
+        `-- proc.c
+\end{lstlisting}
+
+The packager creates its temporary archive inside the repository, so it does not depend on \file{/tmp} being on the same filesystem. Do not use a manual ZIP workaround.
+
+\section{Final checklist}
+
+Before packaging, verify all of the following:
+
+\begin{itemize}
+\item only the six TODO regions/helper region in \file{kernel/proc.c} were edited;
+\item every TODO marker is still present;
+\item no file was copied from another LUIT/xv6 tree;
+\item \file{stride\_lock} is never held across \file{swtch()};
+\item no scan holds two process locks at once;
+\item invalid ticket requests leave scheduler state unchanged;
+\item fork does not create a pass-zero head start;
+\item wakeup and kill do not create a stale-pass burst;
+\item all four public markers appear and the shell returns after each test;
+\item \file{python3 tools/lab07\_check.py} passes immediately before packaging.
+\end{itemize}
+
+\end{document}

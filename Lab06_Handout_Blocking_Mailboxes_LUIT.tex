@@ -1,0 +1,536 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[a4paper,margin=18mm,top=16mm,bottom=17mm]{geometry}
+\usepackage{fontspec}
+\setmainfont{Carlito}
+\setsansfont{Carlito}
+\setmonofont{DejaVu Sans Mono}[Scale=0.88]
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{parskip}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\definecolor{DeepBlue}{HTML}{17365D}
+\definecolor{Warn}{HTML}{8A4B08}
+\hypersetup{colorlinks=true,linkcolor=DeepBlue,urlcolor=DeepBlue}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{CS3106L Operating Systems Laboratory}
+\rhead{Lab 6: Blocking Mailboxes}
+\cfoot{Page \thepage\ of \pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\setlength{\headheight}{14pt}
+
+\lstdefinestyle{code}{
+  basicstyle=\ttfamily\small,
+  frame=single,
+  framesep=5pt,
+  xleftmargin=3pt,
+  xrightmargin=3pt,
+  breaklines=true,
+  showstringspaces=false,
+  columns=fullflexible
+}
+\lstset{style=code}
+
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\cmd}[1]{\texttt{#1}}
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries CS3106L Operating Systems Laboratory}\\[2mm]
+{\LARGE\bfseries Lab 6: Blocking Mailboxes in LUIT}\\[2mm]
+{\large\bfseries Graded kernel-concurrency implementation}\\[2mm]
+Department of Computer Science and Engineering, IIT Guwahati
+\end{center}
+
+\hrule
+\vspace{4mm}
+
+Build a bounded multi-producer/multi-consumer mailbox facility inside the LUIT kernel. The release installs the ABI, boot-time initialization, public programs, submission tooling, and checking infrastructure. The implementation work is confined to \file{kernel/mailbox.c}.
+
+\textbf{Central problem:}
+\[
+\boxed{\text{protect shared state} + \text{block without spinning} +
+\text{avoid lost wakeups} + \text{survive SMP races}}
+\]
+
+The happy path is only a small part of this lab. Correctness also includes full queues, empty queues, multiple sleepers, close races, queue wraparound, repeated wakeups, and execution on several harts.
+
+\section{Required behaviour at a glance}
+
+LUIT exposes eight global mailboxes. Every mailbox is a bounded FIFO queue of eight non-negative integer messages.
+
+\begin{center}
+\begin{tabularx}{0.96\textwidth}{@{}p{44mm}X@{}}
+\toprule
+\textbf{Operation} & \textbf{Contract} \\
+\midrule
+\file{mbox\_send(id, value)} & Insert \file{value} and return 0. Block while the mailbox is full and open. Return -1 for an invalid ID, a negative value, or a mailbox that has been closed. \\
+\file{mbox\_recv(id)} & Remove and return the oldest buffered value. Block while the mailbox is empty and open. Return -1 for an invalid ID, or after the mailbox is closed and all buffered values have been drained. \\
+\file{mbox\_close(id)} & Permanently close a valid mailbox and return 0. Repeated close is also 0. Closing never discards buffered values. It must wake operations that can no longer wait for their old condition. Return -1 only for an invalid ID. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The constants are fixed by the supplied header:
+
+\begin{lstlisting}[language=C]
+#define NMAILBOX 8
+#define MBOX_CAP 8
+\end{lstlisting}
+
+Valid mailbox IDs are 0 through 7. Valid messages are 0 through 2147483647. The value -1 is reserved as the error/end-of-stream result of \file{mbox\_recv()}.
+
+The API guarantees FIFO order for messages, not FIFO fairness among blocked senders or receivers. LUIT's \file{wakeup()} may make several sleepers runnable; they compete normally for the mailbox lock and must re-check the predicate. Process-kill/cancellation of a task while it is blocked inside a mailbox syscall is outside the Lab 6 API contract; do not modify LUIT's process-kill machinery for this assignment.
+
+\section{What must be true in every execution}
+
+For each mailbox, preserve these invariants at all times:
+
+\begin{enumerate}[leftmargin=7mm]
+\item \(0 \leq \texttt{count} \leq \texttt{MBOX\_CAP}\).
+\item Queue indices never leave the ring-buffer range.
+\item A successful receive removes exactly one previously successful send.
+\item No successful message is duplicated or silently lost.
+\item FIFO order is the order in which messages are actually inserted into one mailbox while holding its lock. Two producers that call \file{mbox\_send()} concurrently do not have a predetermined relative order before one of them acquires the mailbox lock.
+\item Once \file{closed} becomes true, it never becomes false until reboot.
+\item Closing does not erase already-buffered messages.
+\item An operation waiting for a condition must eventually be able to re-check that condition after a relevant state change; it must not miss the wakeup because of an unlock-then-sleep gap.
+\end{enumerate}
+
+A lock protects the \emph{invariant}, not merely a line of code. Every field whose consistency participates in the queue state must follow one coherent locking discipline.
+
+\section{Release setup}
+
+\textbf{Important: this ZIP is a Lab 6 overlay, not a complete LUIT source tree.} It intentionally does not contain LUIT's top-level \file{Makefile}. Start from the completed Lab 4 LUIT tree in which \file{make} already works; the installer patches that existing \file{Makefile}. Do not run the preflight against the extracted Lab 6 package itself.
+
+The course LUIT tree used for this lab does not require \file{kernel/proc.h} or \file{kernel/spinlock.h}. Do not create either file and do not copy them from xv6. The supplied \file{kernel/mailbox.c} includes \file{kernel/defs.h}; the existing lock implementation remains in \file{kernel/spinlock.c}.
+
+Use a scratch copy or scratch Git branch of the completed LUIT tree. A Lab 4-complete tree is sufficient; retaining the non-graded Lab 5 practicum additions is optional. First establish the old baseline:
+
+\begin{lstlisting}[language=bash]
+make clean
+make
+make grade
+\end{lstlisting}
+
+Do not install Lab 6 on a tree that is already failing its earlier regression suite.
+
+From the Lab 6 package directory, run the compatibility check against the LUIT tree:
+
+\begin{lstlisting}[language=bash]
+python3 tools/lab06_preflight.py /path/to/LUIT_TREE
+\end{lstlisting}
+
+The final line must be:
+
+\begin{lstlisting}
+LAB6 preflight: PASS
+\end{lstlisting}
+
+The preflight checks the source-tree assumptions used by this release: the generated syscall ABI, \file{p->tf}, the existing spinlock discipline, \file{sleep()/wakeup()}, the process initialization point, \file{UPROGS}, and the kernel object build rule.
+
+Install the release:
+
+\begin{lstlisting}[language=bash]
+python3 tools/install_lab06.py /path/to/LUIT_TREE
+\end{lstlisting}
+
+The installer first verifies every destination and computes all required patches before writing anything. It creates \file{.lab06\_backup/} before patching the tree. It then adds the mailbox ABI, user prototypes, boot initialization, public programs, and release tools, and writes \file{LAB06\_RELEASE.json}. The manifest records both the Lab 6 infrastructure hashes and a source-tree baseline, so later edits outside \file{kernel/mailbox.c} are detected.
+
+If an installation-time error occurs after writing begins, the installer attempts to restore the original patched files and remove the Lab 6 files it created.
+
+After installation, move to the LUIT root and run:
+
+\begin{lstlisting}[language=bash]
+python3 tools/lab06_check.py
+make clean
+make
+\end{lstlisting}
+
+The starter is intentionally compilable, but mailbox operations return errors until the TODO regions are implemented.
+
+\section{Work only in the supplied TODO regions}
+
+The implementation file contains five marked regions:
+
+\begin{center}
+\begin{tabularx}{0.92\textwidth}{@{}p{18mm}p{34mm}X@{}}
+\toprule
+\textbf{Region} & \textbf{Location} & \textbf{Responsibility} \\
+\midrule
+M1 & \file{struct mailbox} & queue state, closed state, and stable wait-channel state \\
+M2 & \file{mailboxinit()} & initialize every field for all eight mailboxes \\
+M3 & \file{mbox\_send()} & blocking bounded insertion \\
+M4 & \file{mbox\_recv()} & blocking FIFO removal and closed/drained behaviour \\
+M5 & \file{mbox\_close()} & idempotent close and wakeup of both classes of waiter \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Keep every \file{TODO-BEGIN}/\file{TODO-END} marker. Optional helper functions may be added only between the supplied \file{LAB6-HELPERS-BEGIN}/\file{LAB6-HELPERS-END} markers. Do not change function signatures, the supplied argument checks, or the syscall wrappers.
+
+After installation, the following files in the LUIT tree are release infrastructure and must remain unchanged. The \file{Makefile} listed here is the existing LUIT Makefile patched by the installer; it is not shipped as a standalone file in this ZIP.
+
+\begin{lstlisting}
+Makefile
+kernel/main.c
+kernel/defs.h
+kernel/syscall.tbl
+kernel/mailbox.h
+user/ulib.h
+user/mbox_basic.c
+user/mbox_block.c
+user/mbox_stress.c
+user/mbox_multi.c
+tools/lab06_check.py
+tools/package_lab06.py
+tests/grade_lab06.py
+docs/lab06_gdb.txt
+\end{lstlisting}
+
+The release checker verifies those files against the install-time manifest. It also checks the source-tree baseline captured at installation time and reports source-like files changed, removed, or added outside the mailbox implementation. Within the mailbox implementation, the supplied scaffold, argument validation, and syscall wrappers are protected; only M1--M5 and the explicit helper region may differ. Generated build products and the course LLM log are excluded from this source-integrity check.
+
+\section{Task 1 - Design the per-mailbox state}
+
+The starter deliberately gives only the lock and storage array:
+
+\begin{lstlisting}[language=C]
+struct mailbox {
+    struct spinlock lock;
+    int data[MBOX_CAP];
+
+    /* TODO M1 */
+};
+\end{lstlisting}
+
+Add enough state to implement a circular FIFO queue, permanent close, and blocking in two opposite directions.
+
+At minimum, reason about the following logical quantities:
+
+\begin{itemize}[leftmargin=7mm]
+\item where the oldest element is located;
+\item where the next new element will be placed;
+\item how many elements are currently present;
+\item whether new sends are still allowed; and
+\item where receivers and senders sleep.
+\end{itemize}
+
+Use \textbf{two distinct, stable, per-mailbox sleep channels}: one for the condition ``data may be available'' and another for ``space may be available''. A sleep channel is an identity (an address); its stored numeric value is not the predicate.
+
+Do not create one global mailbox lock. Each mailbox already has its own lock so activity on mailbox 0 need not serialize activity on mailbox 7.
+
+\paragraph{Checkpoint 1.} Before coding M3/M4, be able to state exactly which fields are protected by \file{mb->lock} and why reading any of those fields without the lock would make a decision based on potentially stale/inconsistent queue state.
+
+\section{Task 2 - Initialize the complete subsystem}
+
+\file{mailboxinit()} runs once during kernel boot. Initialize the lock and every state field for every mailbox. Initially:
+
+\begin{itemize}[leftmargin=7mm]
+\item the queue is empty;
+\item the first insertion/removal positions are valid ring-buffer positions; and
+\item the mailbox is open.
+\end{itemize}
+
+Do not allocate memory dynamically. All mailbox state is static kernel memory.
+
+\section{Task 3 - Implement blocking send}
+
+\file{mbox\_send(id, value)} already rejects an invalid ID or negative value before the TODO region. Complete the synchronization and queue logic.
+
+A correct design has this shape conceptually, but the missing conditions/actions are yours to implement:
+
+\begin{lstlisting}[language=C]
+acquire(&mb->lock);
+
+while (/* cannot send yet, but waiting could help */)
+    sleep(/* writer-side channel */, &mb->lock);
+
+/* Re-check terminal state. */
+/* Insert exactly once if sending is still legal. */
+/* Wake the class of operation for which data may now exist. */
+
+release(&mb->lock);
+\end{lstlisting}
+
+Important requirements:
+
+\begin{enumerate}[leftmargin=7mm]
+\item Never busy-wait on a full mailbox.
+\item Never call \file{yield()} repeatedly as a substitute for blocking.
+\item Never release the mailbox lock manually and then call \file{sleep()}. Use \file{sleep(chan, \&mb->lock)} so becoming asleep is coordinated with releasing the condition lock.
+\item Use \file{while}, not \file{if}, around a blocking predicate. A wakeup means ``state may have changed'', not ``this caller owns the newly available slot''.
+\item If the mailbox was closed while the sender slept, return -1 without inserting anything.
+\item On success, update the circular queue exactly once and wake receivers waiting for data.
+\end{enumerate}
+
+A full mailbox contains exactly \file{MBOX\_CAP} values. Repeated send/receive must wrap indices around the array without walking past it.
+
+\section{Task 4 - Implement blocking receive}
+
+A receiver has three semantically different cases:
+
+\begin{center}
+\begin{tabularx}{0.92\textwidth}{@{}p{40mm}X@{}}
+\toprule
+\textbf{State while holding lock} & \textbf{Required action} \\
+\midrule
+queue non-empty & remove and return the oldest value \\
+queue empty, mailbox open & sleep and re-check \\
+queue empty, mailbox closed & return -1 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The important ordering rule is \textbf{drain before end-of-stream}: a closed mailbox may still contain values. For example:
+
+\begin{lstlisting}
+send(17); send(24); send(31); close();
+recv() -> 17
+recv() -> 24
+recv() -> 31
+recv() -> -1
+\end{lstlisting}
+
+A successful receive creates one free slot, so it must wake senders waiting for space. Again, a woken sender must re-check the predicate under the lock because another sender may win the slot first.
+
+\paragraph{Checkpoint 2.} Explain why this is wrong with two waiting receivers:
+
+\begin{lstlisting}[language=C]
+if (mb->count == 0)
+    sleep(...);
+/* assume one item now exists */
+\end{lstlisting}
+
+Construct an execution in which both receivers wake for one insertion and the first receiver consumes the only message before the second reacquires the lock.
+
+\section{Task 5 - Implement close correctly}
+
+Closing is permanent for the lifetime of the boot and is idempotent:
+
+\begin{lstlisting}
+close(open mailbox)   -> 0
+close(closed mailbox) -> 0
+\end{lstlisting}
+
+If a send races with close, use the protected state transition as the ordering point: a send may succeed only if it inserts its value before \file{closed} is set while holding the mailbox lock. A sender that observes the closed state after acquiring/reacquiring the lock must return -1 without insertion.
+
+Closing has three simultaneous obligations:
+
+\begin{enumerate}[leftmargin=7mm]
+\item prevent every future send;
+\item preserve all values that were already buffered; and
+\item wake \textbf{both} kinds of sleeper.
+\end{enumerate}
+
+Why both? An empty closed mailbox gives a sleeping receiver a reason to return -1. A full closed mailbox gives a sleeping sender a reason to stop waiting and return -1. If close wakes only one channel, the other class can remain asleep forever even though its outcome has become final.
+
+Perform the state transition and wakeups while following the same mailbox locking discipline used by send and receive.
+
+\section{Task 6 - Preserve the synchronization abstraction}
+
+Use the synchronization mechanisms already implemented in LUIT:
+
+\begin{lstlisting}[language=C]
+acquire(...)
+release(...)
+sleep(chan, lock)
+wakeup(chan)
+\end{lstlisting}
+
+Do not modify or bypass them. In particular:
+
+\begin{itemize}[leftmargin=7mm]
+\item Do not modify \file{kernel/spinlock.c}, \file{kernel/proc.c}, the scheduler, context-switch code, or trap code.
+\item Do not add compiler atomic builtins to \file{kernel/mailbox.c}.
+\item Do not call \file{push\_off()}, \file{pop\_off()}, \file{intr\_off()}, or \file{intr\_on()} directly from the mailbox implementation. \file{acquire()/release()} already implement LUIT's lock/interrupt discipline.
+\item Do not use arbitrary delays to make a race disappear.
+\item Do not enlarge \file{MBOX\_CAP}.
+\item Do not replace per-mailbox locking with one global lock.
+\end{itemize}
+
+The challenge is to compose the existing primitives correctly, not to rewrite them.
+
+\section{Public tests}
+
+First run the structural/integrity checker and build:
+
+\begin{lstlisting}[language=bash]
+python3 tools/lab06_check.py
+make clean
+make
+\end{lstlisting}
+
+Then run the public suite. During development, use the quick form:
+
+\begin{lstlisting}[language=bash]
+python3 tests/grade_lab06.py --quick
+\end{lstlisting}
+
+Before considering the implementation complete, run the full form:
+
+\begin{lstlisting}[language=bash]
+python3 tests/grade_lab06.py
+\end{lstlisting}
+
+The full form runs the existing \file{make grade} regression suite before the mailbox tests.
+
+A correct public run ends with:
+
+\begin{lstlisting}
+[PASS] mbox_basic: MBOX_BASIC: PASS
+[PASS] mbox_block: MBOX_BLOCK: PASS
+[PASS] mbox_multi: MBOX_MULTI: PASS
+[PASS] mbox_stress: MBOX_STRESS: PASS
+
+LAB6 PUBLIC: PASS
+\end{lstlisting}
+
+\subsection*{What the public programs exercise}
+
+\begin{itemize}[leftmargin=7mm]
+\item \file{mbox\_basic}: invalid inputs, \file{INT\_MAX}, FIFO order, ring wraparound, idempotent close, send-after-close, and close-then-drain.
+\item \file{mbox\_block}: a receiver blocked on empty, a sender blocked on full, close waking a blocked receiver, and close waking a blocked sender.
+\item \file{mbox\_multi}: several simultaneous receivers and senders on CPUS=4, one-slot-at-a-time progress that exercises \file{while}-based predicate rechecking, and close waking every blocked receiver/sender in the tested groups.
+\item \file{mbox\_stress}: four concurrent producers and four concurrent consumers on a CPUS=4 boot; the parent verifies every expected value appears exactly once, with no duplicate or missing message. The full public run repeats this stress workload on fresh boots; \file{--quick} performs one stress repetition.
+\end{itemize}
+
+Mailbox IDs are intentionally partitioned among the public programs. A closed mailbox remains closed until reboot. The public driver starts fresh QEMU sessions where required and waits for each program to return to the shell after printing its PASS marker. If you run one public program manually a second time, reboot first.
+
+\section{Correctness beyond the public tests}
+
+Public tests are examples, not the complete contract. The completed implementation must also remain correct under schedules such as:
+
+\begin{itemize}[leftmargin=7mm]
+\item several senders sleeping on one full mailbox;
+\item several receivers sleeping on one empty mailbox;
+\item a wakeup followed by another caller winning the lock first;
+\item close racing with send and receive;
+\item thousands of ring-buffer wraparounds;
+\item simultaneous operations on different mailboxes;
+\item repeated CPUS=4 stress runs; and
+\item timings that differ from the public programs.
+\end{itemize}
+
+A hang is a correctness failure. A solution that passes once by scheduling luck is not correct.
+
+\section{Debugging blocked executions}
+
+The package installs \file{docs/lab06\_gdb.txt}. For a focused debugging session:
+
+\begin{lstlisting}[language=bash]
+# Terminal A
+make qemu-gdb CPUS=2
+
+# Terminal B
+gdb-multiarch kernel.elf
+\end{lstlisting}
+
+Useful breakpoints are \file{mbox\_send}, \file{mbox\_recv}, \file{mbox\_close}, \file{sleep}, and \file{wakeup}. At \file{sleep()}, inspect the backtrace: the caller should be the path whose predicate is currently false, and the lock passed to \file{sleep()} must be the lock that protects that predicate.
+
+Do not call synchronization functions manually from GDB; that changes the state being debugged.
+
+\section{Common incorrect designs}
+
+\begin{center}
+\begin{tabularx}{0.96\textwidth}{@{}p{54mm}X@{}}
+\toprule
+\textbf{Incorrect design} & \textbf{Why it fails} \\
+\midrule
+check full/empty, unlock, then sleep & wakeup can occur in the gap; sleeper may never wake \\
+use \file{if} around \file{sleep()} & multiple/spurious wakeups do not grant ownership of the predicate \\
+spin while full/empty & wastes a hart and violates the blocking contract \\
+keep lock while spinning for opposite operation & can prevent the operation that must change the predicate \\
+one global lock for all mailboxes & serializes independent objects and violates the per-mailbox design \\
+close discards the queue & violates drain-after-close semantics \\
+close wakes only readers or only writers & the other class can remain asleep forever \\
+wake writers after send / readers after receive & wakes the wrong condition and may leave the useful waiter asleep \\
+advance ring index without modulo wrap & eventually indexes outside \file{data[MBOX\_CAP]} \\
+return from \file{sleep()} and proceed without re-check & another process may have changed the state first \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+
+\section{Create the submission archive}
+
+After the full public suite passes, create the submission ZIP from the LUIT root. Replace the example with the exact nine-digit roll number:
+
+\begin{lstlisting}[language=bash]
+python3 tools/package_lab06.py 230101037
+\end{lstlisting}
+
+The packaging tool first runs the Lab 6 release checker, verifies that the implementation file is no longer the untouched starter, verifies that all five TODO markers are still present, and then creates exactly one archive:
+
+\begin{lstlisting}
+230101037_Lab06.zip
+\end{lstlisting}
+
+The ZIP contains exactly one top-level roll-numbered directory and one source file:
+
+\begin{lstlisting}
+230101037_Lab06/
+`-- kernel/
+    `-- mailbox.c
+\end{lstlisting}
+
+Do not submit the full LUIT tree, object files, disk images, generated syscall files, public tests, screenshots, or additional report files. Submit the verified roll-numbered ZIP through the official course submission channel announced for Lab 6.
+
+\section{Final verification checklist}
+
+Before the final run, verify all of the following:
+
+\begin{itemize}[leftmargin=7mm]
+\item[$\square$] Only M1--M5 and the explicit helper region in \file{kernel/mailbox.c} were changed; the supplied wrappers and validation remain untouched.
+\item[$\square$] Each mailbox has its own spinlock.
+\item[$\square$] The ring-buffer invariants hold at empty, full, and wraparound boundaries.
+\item[$\square$] Send blocks rather than spins when full.
+\item[$\square$] Receive blocks rather than spins when empty.
+\item[$\square$] Blocking predicates are checked with \file{while}.
+\item[$\square$] \file{sleep()} receives the lock that protects the tested predicate.
+\item[$\square$] Send wakes receivers; receive wakes senders.
+\item[$\square$] Close wakes both kinds of waiter.
+\item[$\square$] Buffered values remain readable after close.
+\item[$\square$] New sends fail after close.
+\item[$\square$] Closed-and-drained receive returns -1.
+\item[$\square$] \file{python3 tools/lab06\_check.py} passes.
+\item[$\square$] \file{make} completes with no warning/error.
+\item[$\square$] \file{make grade} preserves the earlier baseline.
+\item[$\square$] The public suite passes on its CPUS=1 and CPUS=4 runs, including the multiple-waiter test and repeated full-mode SMP stress runs.
+\item[$\square$] The packaging command above creates a verified roll-numbered ZIP containing only \file{kernel/mailbox.c}.
+\end{itemize}
+
+\section{Questions to be able to defend}
+
+Be prepared to explain the implementation rather than only its output:
+
+\begin{enumerate}[leftmargin=7mm]
+\item Why must a sender re-check \file{count} after waking?
+\item Why must a receiver re-check \file{count} after waking?
+\item Exactly what race is prevented by passing \file{\&mb->lock} to \file{sleep()}?
+\item Why are two separate wait channels useful even though one spinlock protects the whole mailbox?
+\item Why does closing an empty mailbox wake receivers?
+\item Why does closing a full mailbox wake senders?
+\item Why is FIFO defined by successful insertion order rather than syscall-entry time when several producers run concurrently?
+\item Which invariants would be corrupted if \file{tail} or \file{count} were updated outside the lock?
+\item Why is a global mailbox lock correct for mutual exclusion but still not an acceptable design here?
+\item What is the difference between the job of the mailbox spinlock and the job of \file{push\_off()/pop\_off()} inside LUIT's spinlock implementation?
+\end{enumerate}
+
+\vfill
+\begin{center}
+\textbf{A correct solution should remain correct under a schedule you did not predict.}
+\end{center}
+
+\end{document}
