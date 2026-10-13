@@ -1,32 +1,220 @@
-# Comprehensive Viva Preparation Guide: Labs 5, 6, and 7
+# Comprehensive Viva Preparation Guide: Labs 4, 5, 6, and 7
 **Course:** CS3106L Operating Systems Laboratory, IIT Guwahati  
 **Kernel:** BrahmaputraOS / LUIT (RISC-V)
 
 ---
 
+# EXECUTIVE SUMMARY & LAB ROADMAP
+
+| Lab | Problem Tackled | Key Kernel Mechanism | What Proves It Works |
+| :--- | :--- | :--- | :--- |
+| **Lab 4** | Eager memory waste & page fault handling | Lazy heap reservation (`p->sz`), page-fault trap repair, lazy kernel copy (`user_resolve_pa`) | `lazytest` (reserves memory without RAM; fault materializes zero-filled pages on demand) |
+| **Lab 5** | Race conditions & unbounded waiting | Atomic `amoswap`, `push_off`/`pop_off`, `sleep(chan, &lock)` | `race_demo` (lost update $\rightarrow$ 0 lost); `pipe_stress` (8192 bytes through 512B pipe without drop) |
+| **Lab 6** | Multicore Inter-Process Communication | Bounded MPMC circular queue with `rchan`/`wchan` & drain-on-close | `mbox_stress` (4 producers, 4 consumers on 4 cores with zero dropped/duplicated messages) |
+| **Lab 7** | Deterministic CPU resource sharing | Minimum pass stride selection ($S = \text{BIG}/T$) + global `stride_floor` clamping | `stride_share` (100:50:250 tickets achieve precise proportional CPU dispatches) |
+
+---
+
 # TABLE OF CONTENTS
-1. [LAB 5: Concurrency, Locks, and Sleep/Wakeup](#lab-5-concurrency-locks-and-sleepwakeup)
-   - [1.1 Race Conditions & Lost Updates](#11-race-conditions--lost-updates)
-   - [1.2 Hardware Atomicity & Spinlocks](#12-hardware-atomicity--spinlocks)
-   - [1.3 Interrupt Discipline & Same-Hart Deadlock](#13-interrupt-discipline--same-hart-deadlock)
-   - [1.4 Sleep / Wakeup & The Lost-Wakeup Bug](#14-sleep--wakeup--the-lost-wakeup-bug)
-   - [1.5 Bounded Pipe Concurrency Case Study](#15-bounded-pipe-concurrency-case-study)
-2. [LAB 6: Bounded Blocking Mailboxes](#lab-6-bounded-blocking-mailboxes)
-   - [2.1 Subsystem Design & State Representation](#21-subsystem-design--state-representation)
-   - [2.2 Sleep Channels (`rchan` vs `wchan`)](#22-sleep-channels-rchan-vs-wchan)
-   - [2.3 Operation Walkthroughs (Send, Recv, Close)](#23-operation-walkthroughs-send-recv-close)
-   - [2.4 Critical Edge Cases & Common Traps](#24-critical-edge-cases--common-traps)
-3. [LAB 7: Deterministic Proportional-Share (Stride) Scheduling](#lab-7-deterministic-proportional-share-stride-scheduling)
-   - [3.1 Stride Scheduling Fundamentals & Mathematical Proof](#31-stride-scheduling-fundamentals--mathematical-proof)
-   - [3.2 The 3 Classic Pitfalls & How LUIT Solves Them](#32-the-3-classic-pitfalls--how-luit-solves-them)
-   - [3.3 SMP Selection Algorithm & Locking Contract](#33-smp-selection-algorithm--locking-contract)
-   - [3.4 Summary of Lab 7 Implementation Regions (S1–S6)](#34-summary-of-lab-7-implementation-regions-s1s6)
+1. [LAB 4: Fault-Driven Heap Allocation (Lazy Page Allocation)](#lab-4-fault-driven-heap-allocation-lazy-page-allocation)
+   - [1.1 The Core Idea: Eager vs. Lazy Allocation](#11-the-core-idea-eager-vs-lazy-allocation)
+   - [1.2 Address Space Layout & Legal vs. Illegal Accesses](#12-address-space-layout--legal-vs-illegal-accesses)
+   - [1.3 The 4 Graded Tasks (K1, K2, K3, K4)](#13-the-4-graded-tasks-k1-k2-k3-k4)
+   - [1.4 High-Yield Viva Questions for Lab 4](#14-high-yield-viva-questions-for-lab-4)
+2. [LAB 5: Concurrency, Locks, and Sleep/Wakeup](#lab-5-concurrency-locks-and-sleepwakeup)
+   - [2.1 Race Conditions & Lost Updates](#21-race-conditions--lost-updates)
+   - [2.2 Hardware Atomicity & Spinlocks](#22-hardware-atomicity--spinlocks)
+   - [2.3 Interrupt Discipline & Same-Hart Deadlock](#23-interrupt-discipline--same-hart-deadlock)
+   - [2.4 Sleep / Wakeup & The Lost-Wakeup Bug](#24-sleep--wakeup--the-lost-wakeup-bug)
+   - [2.5 Bounded Pipe Concurrency Case Study](#25-bounded-pipe-concurrency-case-study)
+3. [LAB 6: Bounded Blocking Mailboxes](#lab-6-bounded-blocking-mailboxes)
+   - [3.1 Subsystem Design & State Representation](#31-subsystem-design--state-representation)
+   - [3.2 Sleep Channels (`rchan` vs `wchan`)](#32-sleep-channels-rchan-vs-wchan)
+   - [3.3 Operation Walkthroughs (Send, Recv, Close)](#33-operation-walkthroughs-send-recv-close)
+   - [3.4 Critical Edge Cases & Common Traps](#34-critical-edge-cases--common-traps)
+4. [LAB 7: Deterministic Proportional-Share (Stride) Scheduling](#lab-7-deterministic-proportional-share-stride-scheduling)
+   - [4.1 Stride Scheduling Fundamentals & Mathematical Proof](#41-stride-scheduling-fundamentals--mathematical-proof)
+   - [4.2 The 3 Classic Pitfalls & How LUIT Solves Them](#42-the-3-classic-pitfalls--how-luit-solves-them)
+   - [4.3 SMP Selection Algorithm & Locking Contract](#43-smp-selection-algorithm--locking-contract)
+   - [4.4 Summary of Lab 7 Implementation Regions (S1–S6)](#44-summary-of-lab-7-implementation-regions-s1s6)
+
+---
+
+# LAB 4: Fault-Driven Heap Allocation (Lazy Page Allocation)
+
+## 1.1 The Core Idea: Eager vs. Lazy Allocation
+- **Eager Allocation (Old behavior):** When a user calls `sbrk(n)`, the kernel immediately allocates $n$ bytes worth of physical RAM via `palloc()`, zeroes them, and installs leaf Page Table Entries (PTEs).
+  - *Problem:* Programs often allocate huge buffers (e.g. 100 MB sparse arrays) but only touch a few pages. Eagerly allocating everything wastes RAM, burns CPU cycles zeroing untouched memory, and risks early Out-Of-Memory (OOM) failures.
+- **Lazy Allocation (Lab 4 behavior):** When `sbrk(n)` is called with $n > 0$, the kernel **only increases `p->sz`**.
+  - No physical pages are allocated (`palloc` is NOT called).
+  - No PTEs are created.
+  - The address space is merely **reserved**. Physical memory is supplied **on-demand** when the process actually touches a page.
+
+---
+
+## 1.2 Address Space Layout & Legal vs. Illegal Accesses
+
+```text
+Higher Addresses (User Top)
+  | 
+  |  USYSINFO_VA (Lab 3 shared info page - Read Only)
+  | 
+  +--------------------------------+  <-- p->sz (Current heap boundary / "break")
+  |                                |
+  |       LAZY HEAP REGION         |  <-- [p->heapbase, p->sz)
+  |   (Legal to allocate on fault) |
+  |                                |
+  +--------------------------------+  <-- p->heapbase
+  |          User Stack            |
+  +--------------------------------+
+  |       Stack Guard Page         |  <-- UNMAPPED (PTE_V == 0)! MUST CRASH IF TOUCHED!
+  +--------------------------------+
+  |      Program Code & Data       |
+Lower Addresses (0x0)
+```
+
+### What is `p->sz`?
+- `p->sz` is a **virtual memory address (byte-granular)** representing the current break (top ceiling) of the process.
+- **It is NOT a count of mapped pages!**
+  $$\mathbf{p\text{->}sz \ne heapbase + (\text{number of mapped pages} \times \text{PGSIZE})}$$
+- Between `p->heapbase` and `p->sz`, there can be dozens of untouched "lazy holes" with no physical RAM backing them.
+
+### The Golden Rule of Address Validation:
+An address `va` is **only** eligible for lazy allocation if:
+$$\mathbf{p\text{->}heapbase} \le \mathbf{va} < \mathbf{p\text{->}sz}$$
+- If $va < \text{heapbase}$: It could be the **stack guard page** or code! Touching it must **kill the process**, NOT allocate memory!
+- If $va \ge \text{p->sz}$: It is an out-of-bounds pointer beyond what `sbrk()` reserved. The kernel must **kill the process**!
+
+---
+
+## 1.3 The 4 Graded Tasks (K1, K2, K3, K4)
+
+### Task K1: `growproc(int n)` in `kernel/proc.c`
+Implements `sbrk()`:
+1. **Growing the heap (`n > 0`):**
+   ```c
+   uint64 newsz = sz + (uint64)n;
+   if (newsz < sz || newsz > USYSINFO_VA)
+       return -1;
+   p->sz = newsz; // Just update virtual boundary! NO palloc(), NO PTEs!
+   return 0;
+   ```
+2. **Shrinking the heap (`n < 0`):**
+   ```c
+   uint64 dec = (uint64)(-(int64)n);
+   if (dec > sz || sz - dec < p->heapbase) // Never shrink below heapbase!
+       return -1;
+   uint64 newsz = sz - dec;
+   if (PGROUNDUP(newsz) < PGROUNDUP(sz)) {
+       uvmunmap(p->pagetable, PGROUNDUP(newsz),
+                (PGROUNDUP(sz) - PGROUNDUP(newsz)) / PGSIZE, 1);
+       sfence_vma();
+   }
+   p->sz = newsz;
+   return 0;
+   ```
+   *Note:* `uvmunmap()` skips missing PTEs cleanly, so shrinking over unmapped lazy holes does not crash.
+
+---
+
+### Task K2: `lazy_alloc_page(p, va)` in `kernel/vm.c`
+The single worker that materializes exactly one page:
+1. **Validate range:** Verify $p\text{->heapbase} \le va < p\text{->sz}$.
+2. **Page-align:** `va = PGROUNDDOWN(va);`
+3. **Check for existing mapping:** Walk PTE; if `*pte & PTE_V` is already valid, return `-1` (this was a permission fault, not a missing lazy page!).
+4. **Allocate & Zero:**
+   ```c
+   char *mem = palloc();
+   if (!mem) return -1;
+   memset(mem, 0, PGSIZE); // MUST zero for security (no data leaks)!
+   ```
+5. **Install mapping:**
+   ```c
+   mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_R | PTE_W | PTE_U);
+   sfence_vma(); // Flush TLB
+   return 0;
+   ```
+
+---
+
+### Task K3: User Trap Handling in `kernel/trap.c`
+Handles CPU exceptions on user load/store instructions:
+1. When a user instruction accesses an unmapped lazy page, the hardware MMU triggers:
+   - `scause == 13` (Load Page Fault) or `scause == 15` (Store Page Fault).
+   - `stval`: The faulting virtual address.
+   - `sepc`: The exact address of the instruction that caused the fault.
+2. In `usertrap()`:
+   ```c
+   else if (scause == 15 || scause == 13) {
+       uint64 va = r_stval();
+       if (lazy_alloc_page(p, va) != 0) {
+           printf("usertrap: killing pid %d\n", p->pid);
+           p->killed = 1; // Illegal access (e.g. guard page)
+       }
+   }
+   ```
+3. **The Magic Retry (`sret`):**
+   - If `lazy_alloc_page()` succeeds, `usertrap()` returns via `sret`.
+   - `sret` returns to `sepc` (the **exact same instruction** that faulted).
+   - The CPU re-executes the instruction. This time the PTE exists, so it completes silently!
+
+---
+
+### Task K4: Kernel Copy Boundary (`user_resolve_pa()`) in `kernel/vm.c`
+#### Why is K4 needed?
+Consider:
+```c
+char *buf = sbrk(4096); // Lazily reserved, no PTE yet!
+read(fd, buf, 100);     // Passed to kernel syscall!
+```
+The user never loaded/stored to `buf` in user mode, so **no user page fault occurred**!  
+Instead, the **kernel** itself tries to copy file data into `buf` using `copyout()`.  
+If `copyout()` simply rejected unmapped pages, `read()` would fail on a valid buffer!
+
+#### Solution in `user_resolve_pa()`:
+```c
+pte_t *pte = walk(pt, va, 0);
+if (!pte || !(*pte & PTE_V)) {
+    struct proc *p = myproc();
+    // Only materialize if examining the CURRENT process's own page table!
+    if (p && pt == p->pagetable) {
+        if (lazy_alloc_page(p, va) == 0) {
+            pte = walk(pt, va, 0); // Re-fetch installed PTE!
+        }
+    }
+}
+if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U))
+    return 0;
+if (need_write && !(*pte & PTE_W))
+    return 0; // Enforce write permissions (keeps USYSINFO read-only)
+return PTE2PA(*pte);
+```
+
+---
+
+## 1.4 High-Yield Viva Questions for Lab 4
+
+### Q1: Why do we zero out the physical page with `memset(mem, 0, PGSIZE)`?
+**Security / Information Leakage:** Physical pages are recycled from freed memory. If you don't zero the page, the new process can read residual sensitive data left behind by an old process (passwords, encryption keys, private files).
+
+### Q2: Why does `sret` re-execute the faulting instruction instead of skipping to the next one?
+Because the faulting instruction (e.g. `ld a0, 0(s1)`) **never actually finished**! It stopped midway because the MMU couldn't translate the address. Skipping it would skip the read/write entirely. After the kernel installs the PTE, the instruction must be retried so the program gets its data.
+
+### Q3: Why can't we just lazily allocate *any* address that page faults?
+Because page faults are also triggered by **illegal accesses**:
+- Accessing address `0x0` (NULL pointer dereference).
+- Accessing the **stack guard page** (stack overflow).
+- Accessing random unmapped kernel/user memory.  
+If you allocated memory for *any* fault, bugs and stack overflows would silently allocate garbage memory instead of crashing! Only addresses in `[heapbase, sz)` are legal heap addresses.
+
+### Q4: What happens during `fork()` with a lazy heap?
+`uvmcopy()` copies the page table to the child. If a page has a valid PTE, it duplicates the physical page. If a page is a "lazy hole" (reserved by `sbrk` but never touched), `uvmcopy()` simply skips it. The child inherits the same `heapbase` and `sz`, so if the child later touches that page, it will trigger its own page fault and get its own independent physical page!
 
 ---
 
 # LAB 5: Concurrency, Locks, and Sleep/Wakeup
 
-## 1.1 Race Conditions & Lost Updates
+## 2.1 Race Conditions & Lost Updates
 - **Read-Modify-Write (RMW):** A high-level statement like `counter++` is **not atomic**. At the hardware/assembly level, it translates to three discrete instructions:
   1. `LOAD`: Read the current value of `counter` from RAM into a CPU register.
   2. `MODIFY`: Increment the register value by 1.
@@ -52,7 +240,7 @@ Thread 1 (Hart 0)              Thread 2 (Hart 1)             Memory (counter)
 
 ---
 
-## 1.2 Hardware Atomicity & Spinlocks
+## 2.2 Hardware Atomicity & Spinlocks
 A naive software flag:
 ```c
 while (lk->locked) ; // Spin until free
@@ -76,7 +264,7 @@ Modern out-of-order CPUs and optimizing compilers can reorder instructions for p
 
 ---
 
-## 1.3 Interrupt Discipline & Same-Hart Deadlock
+## 2.3 Interrupt Discipline & Same-Hart Deadlock
 
 ### The Same-Hart Self-Deadlock Scenario
 1. Hart 0 calls `acquire(&lock)`.
@@ -98,7 +286,7 @@ Locks can be nested (e.g., acquiring Lock A, then acquiring Lock B).
 
 ---
 
-## 1.4 Sleep / Wakeup & The Lost-Wakeup Bug
+## 2.4 Sleep / Wakeup & The Lost-Wakeup Bug
 
 ### Spinning vs. Sleeping
 - **Spinlock:** For **short** waits (a few clock cycles). The core stays active and wastes CPU cycles.
@@ -167,7 +355,7 @@ When `sleep()` returns, it has re-acquired the lock, but:
 
 ---
 
-## 1.5 Bounded Pipe Concurrency Case Study
+## 2.5 Bounded Pipe Concurrency Case Study
 In [`kernel/pipe.c`](file:///home/hp/luitos/Lab06/kernel/pipe.c):
 - `data[PIPESIZE]` ring buffer (512 bytes).
 - **Writer blocks** when full: `pi->nwrite == pi->nread + PIPESIZE`. Sleeps on `&pi->nwrite`.
@@ -179,7 +367,7 @@ In [`kernel/pipe.c`](file:///home/hp/luitos/Lab06/kernel/pipe.c):
 
 # LAB 6: Bounded Blocking Mailboxes
 
-## 2.1 Subsystem Design & State Representation
+## 3.1 Subsystem Design & State Representation
 In [`kernel/mailbox.c`](file:///home/hp/luitos/Lab06/kernel/mailbox.c):
 - `NMAILBOX = 8`, `MBOX_CAP = 8`.
 - Ring buffer storing non-negative integers ($0 \le \text{value} \le 2^{31}-1$).
@@ -199,7 +387,7 @@ struct mailbox {
 
 ---
 
-## 2.2 Sleep Channels (`rchan` vs `wchan`)
+## 3.2 Sleep Channels (`rchan` vs `wchan`)
 - `rchan` and `wchan` are dummy fields. Their values are never read or written.
 - Their **memory addresses** (`&mb->rchan` and `&mb->wchan`) provide two distinct sleep channels.
 - **Why two channels?** To achieve **directed wakeups**.
@@ -209,7 +397,7 @@ struct mailbox {
 
 ---
 
-## 2.3 Operation Walkthroughs (Send, Recv, Close)
+## 3.3 Operation Walkthroughs (Send, Recv, Close)
 
 ### `mbox_send(id, value)`
 1. Validates ID ($0 \le id < 8$) and value ($\ge 0$).
@@ -270,7 +458,7 @@ struct mailbox {
 
 ---
 
-## 2.4 Critical Edge Cases & Common Traps
+## 3.4 Critical Edge Cases & Common Traps
 
 ### Q: Why does `close()` NOT set `count = 0`?
 - **"Drain Before End-of-Stream" Semantics:** Existing buffered messages must **never be discarded** on close.
@@ -288,7 +476,7 @@ struct mailbox {
 
 # LAB 7: Deterministic Proportional-Share (Stride) Scheduling
 
-## 3.1 Stride Scheduling Fundamentals & Mathematical Proof
+## 4.1 Stride Scheduling Fundamentals & Mathematical Proof
 
 ### Core Parameters (per process)
 - **`tickets` ($T$):** User/OS allocation ($1 \le T \le 1000$, default $100$).
@@ -312,7 +500,7 @@ The CPU allocation is mathematically exact and deterministic.
 
 ---
 
-## 3.2 The 3 Classic Pitfalls & How LUIT Solves Them
+## 4.2 The 3 Classic Pitfalls & How LUIT Solves Them
 
 ### 1. New Arrival / Fork Cheating (S1, S2)
 - **Problem:** If a new process started with `pass = 0`, it would dominate the CPU until it reached the pass of existing processes. A process could spam `fork()` to monopolize the system.
@@ -347,7 +535,7 @@ The CPU allocation is mathematically exact and deterministic.
 
 ---
 
-## 3.3 SMP Selection Algorithm & Locking Contract (`stride_pick_next()`, S4)
+## 4.3 SMP Selection Algorithm & Locking Contract (`stride_pick_next()`, S4)
 
 ### The SMP Selection Steps
 1. Acquire global `stride_lock`.
@@ -371,7 +559,7 @@ The CPU allocation is mathematically exact and deterministic.
 
 ---
 
-## 3.4 Summary of Lab 7 Implementation Regions (S1–S6)
+## 4.4 Summary of Lab 7 Implementation Regions (S1–S6)
 
 | Region | Function | Key Action |
 | :--- | :--- | :--- |
