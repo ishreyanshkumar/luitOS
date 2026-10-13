@@ -412,7 +412,7 @@ int wait(uint64 addr)
             release(&wait_lock);
             return -1;
         }
-        sleep(p, &wait_lock);
+        sleep(p, &wait_lock);  
     }
 }
 
@@ -450,7 +450,7 @@ stride_pick_next(struct cpu *c)
                         better = 1;
                 }
             }
-            if (better) {
+            if (better) { 
                 best = p;
                 best_pass = p->sched_pass;
                 best_hart = p->sched_last_hart;

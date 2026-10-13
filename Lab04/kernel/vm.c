@@ -62,7 +62,7 @@ int mappages(pagetable_t pt, uint64 va, uint64 size, uint64 pa, int perm)
 {
     if (size == 0) panic("mappages: zero size");
     uint64 a    = PGROUNDDOWN(va);
-    uint64 last = PGROUNDDOWN(va + size - 1);
+    uint64 last = PGROUNDDOWN(va + size - 1); 
 
     for (;;) {
         pte_t *pte = walk(pt, a, 1);
